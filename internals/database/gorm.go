@@ -3,6 +3,7 @@ package database
 import (
 	"log"
 	"net/url"
+	"time"
 
 	"github.com/andiq123/FindVibeFiber/internals/core/domain"
 	"github.com/andiq123/FindVibeFiber/internals/utils"
@@ -22,6 +23,17 @@ func InitDb() *gorm.DB {
 		log.Println("failed to connect database")
 		log.Fatal(err.Error())
 	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatal("failed to get sql.DB: ", err.Error())
+	}
+
+	sqlDB.SetMaxOpenConns(10)           // Limit the number of open connections
+	sqlDB.SetMaxIdleConns(5)            // Limit idle connections
+	sqlDB.SetConnMaxLifetime(time.Hour) // Set maximum connection lifetime
+
+	db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()")
 
 	db.AutoMigrate(&domain.User{})
 	db.AutoMigrate(&domain.FavoriteSong{})
