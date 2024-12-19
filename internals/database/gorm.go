@@ -33,7 +33,7 @@ func InitDb() *gorm.DB {
 	sqlDB.SetMaxIdleConns(5)            // Limit idle connections
 	sqlDB.SetConnMaxLifetime(time.Hour) // Set maximum connection lifetime
 
-	db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()")
+	db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database();")
 
 	db.AutoMigrate(&domain.User{})
 	db.AutoMigrate(&domain.FavoriteSong{})
