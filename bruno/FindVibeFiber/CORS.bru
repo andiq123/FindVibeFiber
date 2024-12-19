@@ -1,0 +1,15 @@
+meta {
+  name: CORS
+  type: http
+  seq: 11
+}
+
+get {
+  url: http://localhost:8080?url=https://google.com
+  body: none
+  auth: none
+}
+
+params:query {
+  url: https://google.com
+}

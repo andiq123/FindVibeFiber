@@ -39,7 +39,9 @@ func (s *Server) Initialize() {
 
 	v1 := app.Group("/v1")
 
-	app.Use(cors.New())
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: []string{"https://find-vibe.vercel.app"},
+	}))
 	app.Use(recoverer.New())
 
 	//health
