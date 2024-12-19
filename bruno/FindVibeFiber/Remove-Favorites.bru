@@ -1,0 +1,36 @@
+meta {
+  name: Remove-Favorites
+  type: http
+  seq: 7
+}
+
+put {
+  url: http://localhost:8080/v1/favorites
+  body: json
+  auth: none
+}
+
+body:json {
+  [
+    {
+      "songId": "0a2a8632-535c-469b-947d-055bb41e46d2",
+      "order": 2
+    },
+    {
+      "songId": "97fb3783-809a-4075-9d04-833192d0f2a7",
+      "order": 1
+    },
+    {
+      "songId": "03f24191-82fe-4429-a2f0-b261a0d50526",
+      "order": 3
+    },
+    {
+      "songId": "ca789193-fc97-4019-98e6-d8b26b0bcade",
+      "order": 4
+    },
+    {
+      "songId": "79cc1a32-df3c-4132-a559-a16c37d72c42",
+      "order": 5
+    }
+  ]
+}
