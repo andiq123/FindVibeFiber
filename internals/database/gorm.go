@@ -19,7 +19,8 @@ func InitDb() *gorm.DB {
 
 	db, err := gorm.Open(postgres.Open(conn.String()), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
-		log.Fatal("failed to connect database")
+		log.Println("failed to connect database")
+		log.Fatal(err.Error())
 	}
 
 	db.AutoMigrate(&domain.User{})
