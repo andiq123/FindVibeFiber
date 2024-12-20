@@ -21,5 +21,5 @@ func LoadEnv() error {
 }
 
 func IsDebug() bool {
-	return GetEnvOrDef("DEBUG", "true") == "true"
+	return GetEnvOrDef("IS_DEBUG", "true") == "true"
 }
