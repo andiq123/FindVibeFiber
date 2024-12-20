@@ -10,22 +10,22 @@ import (
 
 type MusicFinderService struct {
 	sourceLink string
+	colly      *colly.Collector
 }
 
 var _ ports.IMusicFinderService = (*MusicFinderService)(nil)
 
-func NewMusicFinderService() *MusicFinderService {
+func NewMusicFinderService(colly *colly.Collector) *MusicFinderService {
 	return &MusicFinderService{
 		sourceLink: "https://muzsky.net/search/",
+		colly:      colly,
 	}
 }
 
 func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
-	collector := colly.NewCollector()
-
 	songs := make([]models.Song, 0, 40)
 
-	collector.OnHTML("tbody", func(e *colly.HTMLElement) {
+	m.colly.OnHTML("tbody", func(e *colly.HTMLElement) {
 		e.ForEach("tr", func(_ int, row *colly.HTMLElement) {
 			image := row.ChildAttr("img", "data-src")
 			link := row.ChildAttr("div[data-id]", "data-id")
@@ -38,11 +38,11 @@ func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
 		})
 	})
 
-	if err := collector.Visit(m.sourceLink + query); err != nil {
+	if err := m.colly.Visit(m.sourceLink + query); err != nil {
 		return nil, err
 	}
 
-	collector.Wait()
+	m.colly.Wait()
 	return songs, nil
 }
 
