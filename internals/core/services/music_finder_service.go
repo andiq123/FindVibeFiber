@@ -10,41 +10,45 @@ import (
 
 type MusicFinderService struct {
 	sourceLink string
-	colly      *colly.Collector
 }
 
 var _ ports.IMusicFinderService = (*MusicFinderService)(nil)
 
-func NewMusicFinderService(colly *colly.Collector) *MusicFinderService {
+func NewMusicFinderService() *MusicFinderService {
 	return &MusicFinderService{
 		sourceLink: "https://muzsky.net/search/",
-		colly:      colly,
 	}
 }
 
 func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
+	collector := colly.NewCollector()
+
 	songs := make([]models.Song, 0, 40)
 
-	m.colly.OnHTML("tbody", func(e *colly.HTMLElement) {
-		e.ForEach("tr", func(i int, e *colly.HTMLElement) {
-			image := e.ChildAttr("img", "data-src")
-			link := e.ChildAttr("div[data-id]", "data-id")
+	collector.OnHTML("tbody", func(e *colly.HTMLElement) {
+		e.ForEach("tr", func(_ int, row *colly.HTMLElement) {
+			image := row.ChildAttr("img", "data-src")
+			link := row.ChildAttr("div[data-id]", "data-id")
 
-			artist, title, found := strings.Cut(e.ChildText("a"), " - ")
-			if !found {
-				title = ""
-			}
+			fullText := row.ChildText("a")
+			artist, title := parseArtistAndTitle(fullText)
 
 			song := models.NewSong(title, artist, image, link)
 			songs = append(songs, *song)
 		})
 	})
 
-	err := m.colly.Visit(m.sourceLink + query)
-	if err != nil {
+	if err := collector.Visit(m.sourceLink + query); err != nil {
 		return nil, err
 	}
-	m.colly.Wait()
 
+	collector.Wait()
 	return songs, nil
+}
+
+func parseArtistAndTitle(text string) (string, string) {
+	if artist, title, found := strings.Cut(text, " - "); found {
+		return artist, title
+	}
+	return text, ""
 }

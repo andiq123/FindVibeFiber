@@ -44,22 +44,17 @@ func (s *Server) Initialize() {
 	}))
 	app.Use(recoverer.New())
 
-	//health
 	v1.Get("/ping", s.healthHandler.GetHealth)
 
-	//auth
 	authRoutes := v1.Group("/auth")
 	authRoutes.Get("/:username", s.authHandlers.AuthenticateUser)
 
-	//suggestions
 	suggestionsRoutes := v1.Group("/suggestions")
 	suggestionsRoutes.Get("/", s.suggestionsHandlers.GetSuggestions)
 
-	//music finder
 	musicFinderRoutes := v1.Group("/music-finder")
 	musicFinderRoutes.Get("/", s.musicFinderHandlers.FindMusic)
 
-	//favorites
 	favoritesRoutes := v1.Group("/favorites")
 	favoritesRoutes.Get("/:userId", s.favoritesHandler.GetFavorites)
 	favoritesRoutes.Post("/:userId", s.favoritesHandler.AddFavorite)
@@ -67,10 +62,7 @@ func (s *Server) Initialize() {
 	favoritesRoutes.Put("/", s.favoritesHandler.ReorderFavorites)
 
 	port := utils.GetEnvOrDef("PORT", "8080")
-	fmt.Println("Server listening on port: ", port)
 
-	err := app.Listen(fmt.Sprintf(":%v", port), fiber.ListenConfig{EnablePrefork: true})
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Println("Server listening on port: ", port)
+	log.Fatal(app.Listen(fmt.Sprintf(":%v", port), fiber.ListenConfig{EnablePrefork: true}))
 }

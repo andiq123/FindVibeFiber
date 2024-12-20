@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"log"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -17,9 +16,10 @@ func GetEnvOrDef(key, def string) string {
 	return value
 }
 
-func LoadEnv() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Error loading .env file")
-	}
+func LoadEnv() error {
+	return godotenv.Load()
+}
+
+func IsDebug() bool {
+	return GetEnvOrDef("DEBUG", "true") == "true"
 }

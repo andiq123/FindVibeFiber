@@ -14,41 +14,53 @@ import (
 )
 
 func InitDb() *gorm.DB {
-	debug := false
-
 	var db *gorm.DB
 	var err error
 
-	if debug {
+	if utils.IsDebug() {
 		db, err = gorm.Open(sqlite.Open("findVibe.db"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 		if err != nil {
-			log.Println("failed to connect database")
-			log.Fatal(err.Error())
+			log.Fatalf("Failed to connect to SQLite in debug mode: %v", err)
 		}
 	} else {
 		serviceURI := utils.GetEnvOrDef("POSTGRES_URI", "sqlite://findVibe.db")
 		conn, _ := url.Parse(serviceURI)
-		conn.RawQuery = "sslmode=verify-ca;sslrootcert=ca.pem"
+		q := conn.Query()
+		q.Set("sslmode", "verify-ca")
+		q.Set("sslrootcert", "ca.pem")
+		conn.RawQuery = q.Encode()
+
 		db, err = gorm.Open(postgres.Open(conn.String()), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 		if err != nil {
-			log.Println("failed to connect database")
-			log.Fatal(err.Error())
+			log.Fatalf("Failed to connect to PostgreSQL in release mode: %v", err)
 		}
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		log.Fatal("failed to get sql.DB: ", err.Error())
+		log.Fatalf("Failed to get database connection: %v", err)
 	}
 
 	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
-	db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database();")
-
-	db.AutoMigrate(&domain.User{})
-	db.AutoMigrate(&domain.FavoriteSong{})
+	if err := db.AutoMigrate(&domain.User{}, &domain.FavoriteSong{}); err != nil {
+		log.Fatalf("Auto migration failed: %v", err)
+	}
 
 	return db
+}
+
+func CloseDb(db *gorm.DB) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("Failed to get database connection: %v", err)
+	}
+
+	if err := sqlDB.Close(); err != nil {
+		log.Fatalf("Failed to close database connection: %v", err)
+	}
+
+	log.Println("Database connection closed")
 }
