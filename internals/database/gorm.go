@@ -43,7 +43,7 @@ func InitDb() *gorm.DB {
 
 	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
 	if err := db.AutoMigrate(&domain.User{}, &domain.FavoriteSong{}); err != nil {
 		log.Fatalf("Auto migration failed: %v", err)
