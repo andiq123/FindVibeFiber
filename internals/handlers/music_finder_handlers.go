@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 
+	"github.com/andiq123/FindVibeFiber/internals/core/models"
 	"github.com/andiq123/FindVibeFiber/internals/core/ports"
 	"github.com/gofiber/fiber/v3"
 )
@@ -19,10 +20,30 @@ func NewMusicFinderHandlers(musicFinderService ports.IMusicFinderService) *Music
 
 func (m *MusicFinderHandlers) FindMusic(c fiber.Ctx) error {
 	query := c.Query("q")
-	songs, err := m.musicFinderService.FindMusic(query)
 
-	if err != nil {
+	resultChan := make(chan []models.Song)
+	errorChan := make(chan error)
+	doneChan := make(chan struct{})
+
+	go func() {
+		defer close(resultChan)
+		defer close(errorChan)
+		songs, err := m.musicFinderService.FindMusic(query)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		resultChan <- songs
+	}()
+
+	var songs []models.Song
+	select {
+	case res := <-resultChan:
+		songs = res
+	case err := <-errorChan:
 		return c.Status(http.StatusInternalServerError).JSON(map[string]string{"error": err.Error()})
+	case <-doneChan:
+		return c.Status(http.StatusInternalServerError).JSON(map[string]string{"error": "task cancelled"})
 	}
 
 	if len(songs) == 0 {

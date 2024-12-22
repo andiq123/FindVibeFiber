@@ -22,8 +22,26 @@ func NewSuggestionsHandlers(suggestionsService ports.ISuggestionsService) *Sugge
 
 func (s *SuggestionsHandlers) GetSuggestions(c fiber.Ctx) error {
 	query := strings.ReplaceAll(c.Query("q"), " ", "+")
-	suggestions, err := s.suggestionsService.GetSuggestions(query)
-	if err != nil {
+
+	resultChan := make(chan []string)
+	errorChan := make(chan error)
+
+	go func() {
+		defer close(resultChan)
+		defer close(errorChan)
+		suggestions, err := s.suggestionsService.GetSuggestions(query)
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		resultChan <- suggestions
+	}()
+
+	var suggestions []string
+	select {
+	case res := <-resultChan:
+		suggestions = res
+	case err := <-errorChan:
 		return c.Status(http.StatusInternalServerError).JSON(map[string]string{"error": err.Error()})
 	}
 
