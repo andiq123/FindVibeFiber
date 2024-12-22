@@ -11,7 +11,6 @@ func GetInstance() *colly.Collector {
 	collector := colly.NewCollector(
 		colly.CacheDir("./cache/music_cache"),
 		colly.AllowURLRevisit(),
-		colly.Async(true),
 	)
 
 	transport := &http.Transport{

@@ -23,50 +23,26 @@ func NewMusicFinderService(colly *colly.Collector) *MusicFinderService {
 }
 
 func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
-	songChannel := make(chan models.Song)
-	errorChannel := make(chan error)
-	done := make(chan struct{})
 	songs := make([]models.Song, 0, 40)
 
-	go func() {
-		defer close(songChannel)
-		defer close(errorChannel)
-		defer close(done)
+	m.colly.OnHTML("tbody", func(e *colly.HTMLElement) {
+		e.ForEach("tr", func(_ int, row *colly.HTMLElement) {
+			image := row.ChildAttr("img", "data-src")
+			link := row.ChildAttr("div[data-id]", "data-id")
 
-		m.colly.OnHTML("tbody", func(e *colly.HTMLElement) {
-			e.ForEach("tr", func(_ int, row *colly.HTMLElement) {
-				image := row.ChildAttr("img", "data-src")
-				link := row.ChildAttr("div[data-id]", "data-id")
+			fullText := row.ChildText("a")
+			artist, title := parseArtistAndTitle(fullText)
 
-				fullText := row.ChildText("a")
-				artist, title := parseArtistAndTitle(fullText)
-
-				song := models.NewSong(title, artist, image, link)
-				songChannel <- *song
-			})
+			song := models.NewSong(title, artist, image, link)
+			songs = append(songs, *song)
 		})
+	})
 
-		if err := m.colly.Visit(m.sourceLink + query); err != nil {
-			errorChannel <- err
-			return
-		}
-
-		m.colly.Wait()
-		done <- struct{}{}
-	}()
-
-	go func() {
-		for song := range songChannel {
-			songs = append(songs, song)
-		}
-	}()
-
-	select {
-	case <-done:
-		return songs, nil
-	case err := <-errorChannel:
+	if err := m.colly.Visit(m.sourceLink + query); err != nil {
 		return nil, err
 	}
+
+	return songs, nil
 }
 
 func parseArtistAndTitle(text string) (string, string) {
