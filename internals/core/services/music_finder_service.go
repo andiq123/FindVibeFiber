@@ -17,7 +17,7 @@ var _ ports.IMusicFinderService = (*MusicFinderService)(nil)
 
 func NewMusicFinderService(colly *colly.Collector) *MusicFinderService {
 	return &MusicFinderService{
-		sourceLink: "https://muzsky.net/search/",
+		sourceLink: "https://muzlen.me/?q=",
 		colly:      colly,
 	}
 }
@@ -25,12 +25,12 @@ func NewMusicFinderService(colly *colly.Collector) *MusicFinderService {
 func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
 	songs := make([]models.Song, 0, 40)
 
-	m.colly.OnHTML("tbody", func(e *colly.HTMLElement) {
-		e.ForEach("tr", func(_ int, row *colly.HTMLElement) {
+	m.colly.OnHTML(".files-cols-2", func(e *colly.HTMLElement) {
+		e.ForEach(".mp3", func(_ int, row *colly.HTMLElement) {
 			image := row.ChildAttr("img", "data-src")
-			link := row.ChildAttr("div[data-id]", "data-id")
+			link := row.ChildAttr("div[mp3source]", "mp3source")
 
-			fullText := row.ChildText("a")
+			fullText := row.ChildText("span")
 			artist, title := parseArtistAndTitle(fullText)
 
 			song := models.NewSong(title, artist, image, link)
