@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 
 	"github.com/andiq123/FindVibeFiber/internals/core/ports"
 )
@@ -24,39 +22,36 @@ func NewSuggestionsService() *SuggestionsService {
 }
 
 func (s *SuggestionsService) GetSuggestions(query string) ([]string, error) {
-	fullLink := fmt.Sprintf("%s%s", s.sourceLink, query)
-	resp, err := http.Get(fullLink)
-
+	resp, err := http.Get(s.sourceLink + query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch suggestions: %w", err)
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected response status: %d", resp.StatusCode)
 	}
-	stringBody := string(bodyBytes)
-
-	startIndex := strings.Index(stringBody, "[")
-	endIndex := strings.LastIndex(stringBody, "]")
-
-	if startIndex == -1 || endIndex == -1 {
-		return nil, errors.New("failed to find suggestions")
-	}
-
-	jsonString := stringBody[startIndex : endIndex+1]
 
 	var data []any
-	err = json.Unmarshal([]byte(jsonString), &data)
-	if err != nil {
-		return nil, err
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	results := make([]string, len(data[1].([]any)))
-	for i, item := range data[1].([]any) {
-		if str, ok := item.([]any)[0].(string); ok {
-			results[i] = str
+	if len(data) < 2 {
+		return nil, errors.New("invalid response structure")
+	}
+
+	items, ok := data[1].([]any)
+	if !ok {
+		return nil, errors.New("invalid suggestions data format")
+	}
+
+	results := make([]string, 0, len(items))
+	for _, item := range items {
+		if suggestion, ok := item.([]any); ok && len(suggestion) > 0 {
+			if str, ok := suggestion[0].(string); ok {
+				results = append(results, str)
+			}
 		}
 	}
 

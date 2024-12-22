@@ -33,8 +33,10 @@ func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
 			fullText := row.ChildText("span")
 			artist, title := parseArtistAndTitle(fullText)
 
-			song := models.NewSong(title, artist, image, link)
-			songs = append(songs, *song)
+			if title != "" || artist != "" {
+				song := models.NewSong(title, artist, image, link)
+				songs = append(songs, *song)
+			}
 		})
 	})
 
@@ -46,8 +48,9 @@ func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
 }
 
 func parseArtistAndTitle(text string) (string, string) {
-	if artist, title, found := strings.Cut(text, " - "); found {
-		return artist, title
+	artist, title, found := strings.Cut(text, " - ")
+	if found {
+		return strings.TrimSpace(artist), strings.TrimSpace(title)
 	}
-	return text, ""
+	return strings.TrimSpace(text), ""
 }
