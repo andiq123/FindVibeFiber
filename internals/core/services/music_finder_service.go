@@ -5,27 +5,27 @@ import (
 
 	"github.com/andiq123/FindVibeFiber/internals/core/models"
 	"github.com/andiq123/FindVibeFiber/internals/core/ports"
+	"github.com/andiq123/FindVibeFiber/internals/scrapper"
 	"github.com/gocolly/colly/v2"
 )
 
 type MusicFinderService struct {
 	sourceLink string
-	colly      *colly.Collector
 }
 
 var _ ports.IMusicFinderService = (*MusicFinderService)(nil)
 
-func NewMusicFinderService(colly *colly.Collector) *MusicFinderService {
+func NewMusicFinderService() *MusicFinderService {
 	return &MusicFinderService{
 		sourceLink: "https://muzlen.me/?q=",
-		colly:      colly,
 	}
 }
 
 func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
+	c := scrapper.GetInstance()
 	songs := make([]models.Song, 0, 40)
 
-	m.colly.OnHTML(".files-cols-2", func(e *colly.HTMLElement) {
+	c.OnHTML(".files-cols-2", func(e *colly.HTMLElement) {
 		e.ForEach(".mp3", func(_ int, row *colly.HTMLElement) {
 			image := row.ChildAttr("img", "data-src")
 			link := row.ChildAttr("div[mp3source]", "mp3source")
@@ -38,7 +38,7 @@ func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
 		})
 	})
 
-	if err := m.colly.Visit(m.sourceLink + query); err != nil {
+	if err := c.Visit(m.sourceLink + query); err != nil {
 		return nil, err
 	}
 

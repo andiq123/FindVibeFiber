@@ -10,7 +10,6 @@ import (
 func GetInstance() *colly.Collector {
 	collector := colly.NewCollector(
 		colly.CacheDir("./cache/music_cache"),
-		colly.AllowURLRevisit(),
 	)
 
 	transport := &http.Transport{

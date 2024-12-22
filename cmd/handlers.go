@@ -4,7 +4,6 @@ import (
 	"github.com/andiq123/FindVibeFiber/internals/core/services"
 	"github.com/andiq123/FindVibeFiber/internals/handlers"
 	"github.com/andiq123/FindVibeFiber/internals/repositories"
-	"github.com/andiq123/FindVibeFiber/internals/scrapper"
 	"gorm.io/gorm"
 )
 
@@ -22,8 +21,7 @@ func getAllHandlers(db *gorm.DB) (*handlers.HealthHandlers, *handlers.AuthHandle
 	suggestionsService := services.NewSuggestionsService()
 	suggestionsHandlers := handlers.NewSuggestionsHandlers(suggestionsService)
 
-	colly := scrapper.GetInstance()
-	musicFinderService := services.NewMusicFinderService(colly)
+	musicFinderService := services.NewMusicFinderService()
 	musicFinderHandlers := handlers.NewMusicFinderHandlers(musicFinderService)
 
 	return healthHandlers, authHandlers, favoritesHandlers, suggestionsHandlers, musicFinderHandlers
