@@ -17,7 +17,7 @@ var _ ports.IMusicFinderService = (*MusicFinderService)(nil)
 
 func NewMusicFinderService() *MusicFinderService {
 	return &MusicFinderService{
-		sourceLink: "https://muzlen.me/?q=",
+		sourceLink: "https://muzvibe.org/search/",
 	}
 }
 
@@ -25,18 +25,15 @@ func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
 	c := scrapper.GetInstance()
 	songs := make([]models.Song, 0, 40)
 
-	c.OnHTML(".files-cols-2", func(e *colly.HTMLElement) {
-		e.ForEach(".mp3", func(_ int, row *colly.HTMLElement) {
-			image := row.ChildAttr("img", "data-src")
-			link := row.ChildAttr("div[mp3source]", "mp3source")
+	c.OnHTML("#results", func(e *colly.HTMLElement) {
+		e.ForEach(".item", func(_ int, row *colly.HTMLElement) {
+			image := row.ChildAttr("img", "src")
+			title := row.ChildText(".title")
+			artist := row.ChildText(".artist")
+			link := row.ChildAttr(".link", "href")
 
-			fullText := row.ChildText("span")
-			artist, title := parseArtistAndTitle(fullText)
-
-			if title != "" || artist != "" {
-				song := models.NewSong(title, artist, image, link)
-				songs = append(songs, *song)
-			}
+			song := models.NewSong(title, artist, image, link)
+			songs = append(songs, *song)
 		})
 	})
 
