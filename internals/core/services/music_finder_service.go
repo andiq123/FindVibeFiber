@@ -1,8 +1,6 @@
 package services
 
 import (
-	"strings"
-
 	"github.com/andiq123/FindVibeFiber/internals/core/models"
 	"github.com/andiq123/FindVibeFiber/internals/core/ports"
 	"github.com/andiq123/FindVibeFiber/internals/scrapper"
@@ -42,12 +40,4 @@ func (m *MusicFinderService) FindMusic(query string) ([]models.Song, error) {
 	}
 
 	return songs, nil
-}
-
-func parseArtistAndTitle(text string) (string, string) {
-	artist, title, found := strings.Cut(text, " - ")
-	if found {
-		return strings.TrimSpace(artist), strings.TrimSpace(title)
-	}
-	return strings.TrimSpace(text), ""
 }
