@@ -13,7 +13,6 @@ type WSMessage struct {
 	Method    string      `json:"method"`
 	Data      interface{} `json:"data"`
 	Timestamp int64       `json:"timestamp"`
-	Latency   int64       `json:"latency,omitempty"`
 }
 
 type Session struct {
@@ -91,22 +90,18 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, username *string) {
 		return
 
 	case "UpdateTime":
-		switch data := msg.Data.(type) {
-		case map[string]interface{}:
-			if clientTime, ok := data["clientTime"].(float64); ok {
-				now := time.Now().UnixMilli()
-				latency := now - int64(clientTime)
-				msg.Latency = latency
-				msg.Timestamp = int64(clientTime) + (latency / 2)
+		// Pass through both the target time and the event timestamp
+		if data, ok := msg.Data.(map[string]interface{}); ok {
+			// Keep the original timestamp from the frontend
+			if eventTime, ok := data["timestamp"].(float64); ok {
+				msg.Timestamp = int64(eventTime)
 			}
-		case string:
-			log.Printf("UpdateTime received string data: %s", data)
-		default:
-			log.Printf("UpdateTime received unexpected data type: %T", msg.Data)
+			// The 'time' field in data will be passed through as is
 		}
 		broadcastToUser(*username, *msg, c)
 
 	case "SetSong", "Play", "Pause":
+		// For other events, just broadcast without timestamp modification
 		broadcastToUser(*username, *msg, c)
 	}
 }
@@ -137,6 +132,7 @@ func broadcast(msg WSMessage) {
 func broadcastToUser(username string, msg WSMessage, senderConn *websocket.Conn) {
 	if userSessions, exists := sessions[username]; exists {
 		for _, sess := range userSessions {
+			// Skip broadcasting to the sender
 			if sess.Conn == senderConn {
 				continue
 			}
