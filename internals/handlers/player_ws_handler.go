@@ -95,8 +95,9 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, username *string) {
 		case map[string]interface{}:
 			if clientTime, ok := data["clientTime"].(float64); ok {
 				now := time.Now().UnixMilli()
-				msg.Timestamp = now
-				msg.Latency = now - int64(clientTime)
+				latency := now - int64(clientTime)
+				msg.Latency = latency
+				msg.Timestamp = int64(clientTime) + (latency / 2)
 			}
 		case string:
 			log.Printf("UpdateTime received string data: %s", data)
