@@ -5,7 +5,10 @@ import (
 	"log"
 
 	"github.com/andiq123/FindVibeFiber/internals/core/ports"
+	"github.com/andiq123/FindVibeFiber/internals/handlers"
 	"github.com/andiq123/FindVibeFiber/internals/utils"
+	websocket "github.com/gofiber/contrib/websocket"
+	fiber2 "github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
@@ -40,7 +43,11 @@ func (s *Server) Initialize() {
 	v1 := app.Group("/v1")
 
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: []string{"https://find-vibe.vercel.app", "http://localhost:4200"},
+		AllowOrigins:     []string{"https://find-vibe.vercel.app", "http://localhost:4200"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "ngrok-skip-browser-warning"},
+		AllowCredentials: true,
+		ExposeHeaders:    []string{"Content-Length"},
 	}))
 	app.Use(recoverer.New())
 
@@ -60,6 +67,22 @@ func (s *Server) Initialize() {
 	favoritesRoutes.Post("/:userId", s.favoritesHandler.AddFavorite)
 	favoritesRoutes.Delete("/:songId", s.favoritesHandler.DeleteFavorite)
 	favoritesRoutes.Put("/", s.favoritesHandler.ReorderFavorites)
+
+	// WebSocket endpoint using Fiber v2 for /v1/player
+	wsApp := fiber2.New()
+	wsApp.Use(func(c *fiber2.Ctx) error {
+		if websocket.IsWebSocketUpgrade(c) {
+			return c.Next()
+		}
+		return fiber2.ErrUpgradeRequired
+	})
+	wsApp.Get("/v1/player", websocket.New(handlers.PlayerWebSocketHandler()))
+
+	// Mount the Fiber v2 app for /v1/player
+	app.Use("/v1/player", func(c fiber.Ctx) error {
+		wsApp.Handler()(c.Context())
+		return nil
+	})
 
 	port := utils.GetEnvOrDef("PORT", "8080")
 
