@@ -12,42 +12,24 @@ import (
 type WSMessage struct {
 	Method    string      `json:"method"`
 	Data      interface{} `json:"data"`
-	Timestamp int64       `json:"timestamp"` // Unix timestamp in milliseconds
+	Timestamp int64       `json:"timestamp"`
+	Latency   int64       `json:"latency,omitempty"`
 }
 
 type Session struct {
 	Username string
 	Conn     *websocket.Conn
-	Latency  int64 // Round-trip latency in milliseconds
 }
 
 var (
 	sessions      = make(map[string][]*Session)
-	sessionsMutex sync.Mutex
+	sessionsMutex sync.RWMutex
 )
 
 func PlayerWebSocketHandler() func(*websocket.Conn) {
 	return func(c *websocket.Conn) {
 		var username string
-		defer func() {
-			sessionsMutex.Lock()
-			if username != "" {
-				if userSessions, exists := sessions[username]; exists {
-					for i, sess := range userSessions {
-						if sess.Conn == c {
-							sessions[username] = append(userSessions[:i], userSessions[i+1:]...)
-							break
-						}
-					}
-					if len(sessions[username]) == 0 {
-						delete(sessions, username)
-					}
-				}
-				broadcastSessions()
-			}
-			sessionsMutex.Unlock()
-			c.Close()
-		}()
+		defer cleanupSession(c, username)
 
 		for {
 			_, msg, err := c.ReadMessage()
@@ -62,94 +44,75 @@ func PlayerWebSocketHandler() func(*websocket.Conn) {
 				continue
 			}
 
-			// Add server timestamp to the message
 			wsMsg.Timestamp = time.Now().UnixMilli()
-
-			switch wsMsg.Method {
-			case "Connect":
-				uname, ok := wsMsg.Data.(string)
-				if !ok {
-					continue
-				}
-				sessionsMutex.Lock()
-				username = uname
-				sessions[username] = append(sessions[username], &Session{
-					Username: username,
-					Conn:     c,
-					Latency:  0,
-				})
-				broadcastSessions()
-				sessionsMutex.Unlock()
-
-			case "Ping":
-				// Handle latency measurement
-				if pingData, ok := wsMsg.Data.(map[string]interface{}); ok {
-					if clientTime, ok := pingData["clientTime"].(float64); ok {
-						latency := time.Now().UnixMilli() - int64(clientTime)
-						sessionsMutex.Lock()
-						if userSessions, exists := sessions[username]; exists {
-							for _, sess := range userSessions {
-								if sess.Conn == c {
-									sess.Latency = latency
-									break
-								}
-							}
-						}
-						sessionsMutex.Unlock()
-					}
-				}
-				// Send pong response
-				c.WriteJSON(WSMessage{
-					Method:    "Pong",
-					Timestamp: time.Now().UnixMilli(),
-				})
-
-			case "Disconnect":
-				sessionsMutex.Lock()
-				if username != "" {
-					if userSessions, exists := sessions[username]; exists {
-						for i, sess := range userSessions {
-							if sess.Conn == c {
-								sessions[username] = append(userSessions[:i], userSessions[i+1:]...)
-								break
-							}
-						}
-						if len(sessions[username]) == 0 {
-							delete(sessions, username)
-						}
-					}
-					broadcastSessions()
-				}
-				sessionsMutex.Unlock()
-				return
-
-			case "SetSong":
-				broadcastToUser(username, wsMsg, c)
-
-			case "Play":
-				broadcastToUser(username, wsMsg, c)
-
-			case "Pause":
-				broadcastToUser(username, wsMsg, c)
-
-			case "UpdateTime":
-				broadcastToUser(username, wsMsg, c)
-			}
+			handleMessage(c, &wsMsg, &username)
 		}
 	}
 }
 
+func cleanupSession(c *websocket.Conn, username string) {
+	sessionsMutex.Lock()
+	defer sessionsMutex.Unlock()
+
+	if username == "" {
+		return
+	}
+
+	if userSessions, exists := sessions[username]; exists {
+		for i, sess := range userSessions {
+			if sess.Conn == c {
+				sessions[username] = append(userSessions[:i], userSessions[i+1:]...)
+				break
+			}
+		}
+		if len(sessions[username]) == 0 {
+			delete(sessions, username)
+		}
+		broadcastSessions()
+	}
+	c.Close()
+}
+
+func handleMessage(c *websocket.Conn, msg *WSMessage, username *string) {
+	switch msg.Method {
+	case "Connect":
+		if uname, ok := msg.Data.(string); ok {
+			sessionsMutex.Lock()
+			*username = uname
+			sessions[uname] = append(sessions[uname], &Session{
+				Username: uname,
+				Conn:     c,
+			})
+			broadcastSessions()
+			sessionsMutex.Unlock()
+		}
+
+	case "Disconnect":
+		cleanupSession(c, *username)
+		return
+
+	case "UpdateTime":
+		if clientTime, ok := msg.Data.(map[string]interface{})["clientTime"].(float64); ok {
+			msg.Latency = time.Now().UnixMilli() - int64(clientTime)
+		}
+		fallthrough
+
+	case "SetSong", "Play", "Pause":
+		broadcastToUser(*username, *msg, c)
+	}
+}
+
 func broadcastSessions() {
-	uniqueUsers := make([]string, 0)
+	users := make([]string, 0, len(sessions))
 	for username := range sessions {
-		uniqueUsers = append(uniqueUsers, username)
+		users = append(users, username)
 	}
-	msg := WSMessage{
+
+	broadcast(WSMessage{
 		Method:    "OtherSessionConnected",
-		Data:      uniqueUsers,
+		Data:      users,
 		Timestamp: time.Now().UnixMilli(),
-	}
-	broadcast(msg)
+	})
 }
 
 func broadcast(msg WSMessage) {
@@ -162,13 +125,14 @@ func broadcast(msg WSMessage) {
 	}
 }
 
-func broadcastToUser(username string, msg WSMessage, excludeConn *websocket.Conn) {
+func broadcastToUser(username string, msg WSMessage, senderConn *websocket.Conn) {
 	if userSessions, exists := sessions[username]; exists {
 		for _, sess := range userSessions {
-			if sess.Conn != excludeConn {
-				if err := sess.Conn.WriteJSON(msg); err != nil {
-					log.Printf("broadcast error to %s: %v", sess.Username, err)
-				}
+			if sess.Conn == senderConn {
+				continue
+			}
+			if err := sess.Conn.WriteJSON(msg); err != nil {
+				log.Printf("broadcast error to %s: %v", sess.Username, err)
 			}
 		}
 	}
