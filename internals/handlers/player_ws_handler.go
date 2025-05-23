@@ -44,7 +44,6 @@ func PlayerWebSocketHandler() func(*websocket.Conn) {
 				continue
 			}
 
-			wsMsg.Timestamp = time.Now().UnixMilli()
 			handleMessage(c, &wsMsg, &username)
 		}
 	}
@@ -95,14 +94,16 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, username *string) {
 		switch data := msg.Data.(type) {
 		case map[string]interface{}:
 			if clientTime, ok := data["clientTime"].(float64); ok {
-				msg.Latency = time.Now().UnixMilli() - int64(clientTime)
+				now := time.Now().UnixMilli()
+				msg.Timestamp = now
+				msg.Latency = now - int64(clientTime)
 			}
 		case string:
 			log.Printf("UpdateTime received string data: %s", data)
 		default:
 			log.Printf("UpdateTime received unexpected data type: %T", msg.Data)
 		}
-		fallthrough
+		broadcastToUser(*username, *msg, c)
 
 	case "SetSong", "Play", "Pause":
 		broadcastToUser(*username, *msg, c)
