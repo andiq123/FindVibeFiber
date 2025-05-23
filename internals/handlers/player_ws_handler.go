@@ -92,8 +92,15 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, username *string) {
 		return
 
 	case "UpdateTime":
-		if clientTime, ok := msg.Data.(map[string]interface{})["clientTime"].(float64); ok {
-			msg.Latency = time.Now().UnixMilli() - int64(clientTime)
+		switch data := msg.Data.(type) {
+		case map[string]interface{}:
+			if clientTime, ok := data["clientTime"].(float64); ok {
+				msg.Latency = time.Now().UnixMilli() - int64(clientTime)
+			}
+		case string:
+			log.Printf("UpdateTime received string data: %s", data)
+		default:
+			log.Printf("UpdateTime received unexpected data type: %T", msg.Data)
 		}
 		fallthrough
 
