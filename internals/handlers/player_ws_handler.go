@@ -18,6 +18,7 @@ type WSMessage struct {
 type Session struct {
 	Username string
 	Conn     *websocket.Conn
+	Closed   bool
 }
 
 var (
@@ -33,13 +34,13 @@ func PlayerWebSocketHandler() func(*websocket.Conn) {
 		for {
 			_, msg, err := c.ReadMessage()
 			if err != nil {
-				log.Println("read error:", err)
+				log.Printf("read error for user %s: %v", username, err)
 				break
 			}
 
 			var wsMsg WSMessage
 			if err := json.Unmarshal(msg, &wsMsg); err != nil {
-				log.Println("unmarshal error:", err)
+				log.Printf("unmarshal error for user %s: %v", username, err)
 				continue
 			}
 
@@ -59,6 +60,7 @@ func cleanupSession(c *websocket.Conn, username string) {
 	if userSessions, exists := sessions[username]; exists {
 		for i, sess := range userSessions {
 			if sess.Conn == c {
+				sess.Closed = true
 				sessions[username] = append(userSessions[:i], userSessions[i+1:]...)
 				break
 			}
@@ -80,6 +82,7 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, username *string) {
 			sessions[uname] = append(sessions[uname], &Session{
 				Username: uname,
 				Conn:     c,
+				Closed:   false,
 			})
 			broadcastSessions()
 			sessionsMutex.Unlock()
@@ -120,24 +123,34 @@ func broadcastSessions() {
 }
 
 func broadcast(msg WSMessage) {
+	sessionsMutex.RLock()
+	defer sessionsMutex.RUnlock()
+
 	for _, userSessions := range sessions {
 		for _, sess := range userSessions {
-			if err := sess.Conn.WriteJSON(msg); err != nil {
-				log.Printf("broadcast error to %s: %v", sess.Username, err)
+			if !sess.Closed {
+				if err := sess.Conn.WriteJSON(msg); err != nil {
+					log.Printf("broadcast error to %s: %v", sess.Username, err)
+					sess.Closed = true
+				}
 			}
 		}
 	}
 }
 
 func broadcastToUser(username string, msg WSMessage, senderConn *websocket.Conn) {
+	sessionsMutex.RLock()
+	defer sessionsMutex.RUnlock()
+
 	if userSessions, exists := sessions[username]; exists {
 		for _, sess := range userSessions {
-			// Skip broadcasting to the sender
-			if sess.Conn == senderConn {
+			// Skip broadcasting to the sender or closed connections
+			if sess.Conn == senderConn || sess.Closed {
 				continue
 			}
 			if err := sess.Conn.WriteJSON(msg); err != nil {
 				log.Printf("broadcast error to %s: %v", sess.Username, err)
+				sess.Closed = true
 			}
 		}
 	}
