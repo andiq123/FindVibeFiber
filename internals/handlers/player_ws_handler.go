@@ -1,12 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
-
-	"slices"
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/google/uuid"
@@ -19,169 +19,448 @@ type WSMessage struct {
 }
 
 type Session struct {
+	ID       string
 	Username string
 	Conn     *websocket.Conn
-	Closed   bool
 	DeviceID string
+	LastPing time.Time
+	mu       sync.RWMutex
+	closed   bool
+}
+
+// IsAlive checks if the session is still alive
+func (s *Session) IsAlive() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.closed
+}
+
+// Close marks the session as closed
+func (s *Session) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		s.closed = true
+		if s.Conn != nil {
+			s.Conn.Close()
+		}
+	}
+}
+
+// SendMessage safely sends a message to the session
+func (s *Session) SendMessage(msg WSMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.Conn == nil {
+		return ErrSessionClosed
+	}
+
+	// Set write deadline to prevent hanging
+	s.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	defer s.Conn.SetWriteDeadline(time.Time{})
+
+	return s.Conn.WriteJSON(msg)
+}
+
+// UpdatePing updates the last ping time
+func (s *Session) UpdatePing() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LastPing = time.Now()
 }
 
 var (
-	sessions      = make(map[string][]*Session)
-	sessionsMutex sync.RWMutex
+	ErrSessionClosed = fmt.Errorf("session is closed")
 )
+
+type SessionManager struct {
+	sessions map[string]map[string]*Session // username -> sessionID -> Session
+	mu       sync.RWMutex
+	cleanup  chan string // sessionID to cleanup
+	ctx      context.Context
+	cancel   context.CancelFunc
+}
+
+func NewSessionManager() *SessionManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	sm := &SessionManager{
+		sessions: make(map[string]map[string]*Session),
+		cleanup:  make(chan string, 100),
+		ctx:      ctx,
+		cancel:   cancel,
+	}
+
+	// Start cleanup goroutine
+	go sm.cleanupWorker()
+	// Start health check goroutine
+	go sm.healthChecker()
+
+	return sm
+}
+
+func (sm *SessionManager) cleanupWorker() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-sm.ctx.Done():
+			return
+		case sessionID := <-sm.cleanup:
+			sm.removeSessionByID(sessionID)
+		case <-ticker.C:
+			sm.cleanupDeadSessions()
+		}
+	}
+}
+
+func (sm *SessionManager) healthChecker() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-sm.ctx.Done():
+			return
+		case <-ticker.C:
+			sm.checkSessionHealth()
+		}
+	}
+}
+
+func (sm *SessionManager) checkSessionHealth() {
+	sm.mu.RLock()
+	var toCheck []*Session
+	for _, userSessions := range sm.sessions {
+		for _, session := range userSessions {
+			toCheck = append(toCheck, session)
+		}
+	}
+	sm.mu.RUnlock()
+
+	for _, session := range toCheck {
+		if !session.IsAlive() {
+			continue
+		}
+
+		// Send ping to check if connection is alive
+		pingMsg := WSMessage{
+			Method:    "Ping",
+			Timestamp: time.Now().UnixMilli(),
+		}
+
+		if err := session.SendMessage(pingMsg); err != nil {
+			log.Printf("Health check failed for user %s, device %s: %v",
+				session.Username, session.DeviceID, err)
+			session.Close()
+			select {
+			case sm.cleanup <- session.ID:
+			default:
+			}
+		}
+	}
+}
+
+func (sm *SessionManager) AddSession(username string, conn *websocket.Conn) *Session {
+	sessionID := uuid.New().String()
+	deviceID := uuid.New().String()
+
+	session := &Session{
+		ID:       sessionID,
+		Username: username,
+		Conn:     conn,
+		DeviceID: deviceID,
+		LastPing: time.Now(),
+		closed:   false,
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.sessions[username] == nil {
+		sm.sessions[username] = make(map[string]*Session)
+	}
+	sm.sessions[username][sessionID] = session
+
+	log.Printf("Added session %s for user %s (device %s)", sessionID, username, deviceID)
+	return session
+}
+
+func (sm *SessionManager) RemoveSession(session *Session) {
+	if session == nil {
+		return
+	}
+
+	session.Close()
+	select {
+	case sm.cleanup <- session.ID:
+	default:
+		// If cleanup channel is full, do it directly
+		sm.removeSessionByID(session.ID)
+	}
+}
+
+func (sm *SessionManager) removeSessionByID(sessionID string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for username, userSessions := range sm.sessions {
+		if session, exists := userSessions[sessionID]; exists {
+			log.Printf("Removing session %s for user %s (device %s)",
+				sessionID, username, session.DeviceID)
+			delete(userSessions, sessionID)
+
+			if len(userSessions) == 0 {
+				delete(sm.sessions, username)
+				log.Printf("No more sessions for user %s", username)
+			}
+			break
+		}
+	}
+}
+
+func (sm *SessionManager) cleanupDeadSessions() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for username, userSessions := range sm.sessions {
+		for sessionID, session := range userSessions {
+			if !session.IsAlive() {
+				log.Printf("Cleaning up dead session %s for user %s", sessionID, username)
+				delete(userSessions, sessionID)
+			}
+		}
+
+		if len(userSessions) == 0 {
+			delete(sm.sessions, username)
+		}
+	}
+}
+
+func (sm *SessionManager) GetActiveSessions(username string) []*Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var sessions []*Session
+	if userSessions, exists := sm.sessions[username]; exists {
+		for _, session := range userSessions {
+			if session.IsAlive() {
+				sessions = append(sessions, session)
+			}
+		}
+	}
+	return sessions
+}
+
+func (sm *SessionManager) GetAllUsers() []string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	users := make([]string, 0, len(sm.sessions))
+	for username := range sm.sessions {
+		users = append(users, username)
+	}
+	return users
+}
+
+func (sm *SessionManager) BroadcastToUserExcept(username string, msg WSMessage, excludeSession *Session) {
+	sessions := sm.GetActiveSessions(username)
+
+	for _, session := range sessions {
+		if session == excludeSession {
+			continue
+		}
+
+		if err := session.SendMessage(msg); err != nil {
+			log.Printf("Failed to send message to user %s, device %s: %v",
+				session.Username, session.DeviceID, err)
+			session.Close()
+			select {
+			case sm.cleanup <- session.ID:
+			default:
+			}
+		}
+	}
+}
+
+func (sm *SessionManager) BroadcastExcept(msg WSMessage, excludeSession *Session) {
+	sm.mu.RLock()
+	var allSessions []*Session
+	for _, userSessions := range sm.sessions {
+		for _, session := range userSessions {
+			if session != excludeSession && session.IsAlive() {
+				allSessions = append(allSessions, session)
+			}
+		}
+	}
+	sm.mu.RUnlock()
+
+	for _, session := range allSessions {
+		if err := session.SendMessage(msg); err != nil {
+			log.Printf("Failed to broadcast to user %s, device %s: %v",
+				session.Username, session.DeviceID, err)
+			session.Close()
+			select {
+			case sm.cleanup <- session.ID:
+			default:
+			}
+		}
+	}
+}
+
+func (sm *SessionManager) Shutdown() {
+	sm.cancel()
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for _, userSessions := range sm.sessions {
+		for _, session := range userSessions {
+			session.Close()
+		}
+	}
+
+	close(sm.cleanup)
+}
+
+// Global session manager
+var sessionManager = NewSessionManager()
 
 func PlayerWebSocketHandler() func(*websocket.Conn) {
 	return func(c *websocket.Conn) {
-		var username string
-		defer cleanupSession(c, username)
+		var currentSession *Session
+
+		// Set connection settings
+		c.SetReadDeadline(time.Time{}) // No read deadline
+		c.SetPongHandler(func(string) error {
+			if currentSession != nil {
+				currentSession.UpdatePing()
+			}
+			return nil
+		})
+
+		defer func() {
+			if currentSession != nil {
+				sessionManager.RemoveSession(currentSession)
+				// Broadcast updated user list
+				broadcastSessionsList()
+			}
+		}()
 
 		for {
-			_, msg, err := c.ReadMessage()
+			_, msgBytes, err := c.ReadMessage()
 			if err != nil {
-				log.Printf("read error for user %s: %v", username, err)
+				if currentSession != nil {
+					log.Printf("Read error for user %s: %v", currentSession.Username, err)
+				}
 				break
 			}
 
 			var wsMsg WSMessage
-			if err := json.Unmarshal(msg, &wsMsg); err != nil {
-				log.Printf("unmarshal error for user %s: %v", username, err)
+			if err := json.Unmarshal(msgBytes, &wsMsg); err != nil {
+				if currentSession != nil {
+					log.Printf("Unmarshal error for user %s: %v", currentSession.Username, err)
+				}
 				continue
 			}
 
-			handleMessage(c, &wsMsg, &username)
+			if err := handleMessage(c, &wsMsg, &currentSession); err != nil {
+				log.Printf("Message handling error: %v", err)
+				break
+			}
 		}
 	}
 }
 
-func cleanupSession(c *websocket.Conn, username string) {
-	if username == "" {
-		return
-	}
-
-	var shouldBroadcast bool
-	var remainingSessions int
-
-	func() {
-		sessionsMutex.Lock()
-		defer sessionsMutex.Unlock()
-
-		log.Printf("Cleaning up session for user: %s", username)
-		if userSessions, exists := sessions[username]; exists {
-			// Find and remove this specific session
-			for i, sess := range userSessions {
-				if sess.Conn == c {
-					log.Printf("Removing device %s for user %s", sess.DeviceID, username)
-					sess.Closed = true
-					sessions[username] = slices.Delete(userSessions, i, i+1)
-					break
-				}
-			}
-
-			// If no more sessions for this user, remove the user
-			if len(sessions[username]) == 0 {
-				log.Printf("No more sessions for user %s, removing user", username)
-				delete(sessions, username)
-			} else {
-				remainingSessions = len(sessions[username])
-				log.Printf("User %s has %d remaining sessions", username, remainingSessions)
-			}
-			shouldBroadcast = true
-		}
-	}()
-
-	c.Close()
-
-	if shouldBroadcast {
-		broadcastSessionsExcept(c)
-	}
-}
-
-func handleMessage(c *websocket.Conn, msg *WSMessage, username *string) {
+func handleMessage(c *websocket.Conn, msg *WSMessage, currentSession **Session) error {
 	switch msg.Method {
 	case "Connect":
-		if uname, ok := msg.Data.(string); ok {
-			deviceID := uuid.New().String()
-			func() {
-				sessionsMutex.Lock()
-				defer sessionsMutex.Unlock()
-				*username = uname
-				sessions[uname] = append(sessions[uname], &Session{
-					Username: uname,
-					Conn:     c,
-					Closed:   false,
-					DeviceID: deviceID,
-				})
-				log.Printf("New device %s connected for user %s", deviceID, uname)
-			}()
-			// Broadcast to all other users except the sender
-			broadcastSessionsExcept(c)
+		username, ok := msg.Data.(string)
+		if !ok || username == "" {
+			return fmt.Errorf("invalid username in connect message")
 		}
 
+		// Create new session
+		*currentSession = sessionManager.AddSession(username, c)
+		log.Printf("User %s connected from device %s", username, (*currentSession).DeviceID)
+
+		// Send connection confirmation
+		confirmMsg := WSMessage{
+			Method: "Connected",
+			Data: map[string]string{
+				"deviceId":  (*currentSession).DeviceID,
+				"sessionId": (*currentSession).ID,
+			},
+			Timestamp: time.Now().UnixMilli(),
+		}
+
+		if err := (*currentSession).SendMessage(confirmMsg); err != nil {
+			return fmt.Errorf("failed to send connection confirmation: %w", err)
+		}
+
+		// Broadcast updated user list to all other sessions
+		broadcastSessionsList()
+
 	case "Disconnect":
-		log.Printf("Disconnect event received for user %s", *username)
-		cleanupSession(c, *username)
-		return
+		if *currentSession != nil {
+			log.Printf("Explicit disconnect for user %s", (*currentSession).Username)
+			sessionManager.RemoveSession(*currentSession)
+			broadcastSessionsList()
+		}
+		return fmt.Errorf("client disconnected")
+
+	case "Pong":
+		if *currentSession != nil {
+			(*currentSession).UpdatePing()
+		}
 
 	case "UpdateTime":
+		if *currentSession == nil {
+			return fmt.Errorf("no active session for UpdateTime")
+		}
+
+		// Parse timestamp from data if provided
 		if data, ok := msg.Data.(map[string]interface{}); ok {
 			if eventTime, ok := data["timestamp"].(float64); ok {
 				msg.Timestamp = int64(eventTime)
 			}
 		}
-		broadcastToUserExcept(*username, *msg, c)
+
+		// Ensure timestamp is set
+		if msg.Timestamp == 0 {
+			msg.Timestamp = time.Now().UnixMilli()
+		}
+
+		sessionManager.BroadcastToUserExcept((*currentSession).Username, *msg, *currentSession)
 
 	case "SetSong", "Play", "Pause":
-		broadcastToUserExcept(*username, *msg, c)
+		if *currentSession == nil {
+			return fmt.Errorf("no active session for %s", msg.Method)
+		}
+
+		// Ensure timestamp is set
+		if msg.Timestamp == 0 {
+			msg.Timestamp = time.Now().UnixMilli()
+		}
+
+		sessionManager.BroadcastToUserExcept((*currentSession).Username, *msg, *currentSession)
+
+	default:
+		log.Printf("Unknown message method: %s", msg.Method)
 	}
+
+	return nil
 }
 
-func broadcastSessionsExcept(senderConn *websocket.Conn) {
-	var users []string
-	func() {
-		sessionsMutex.RLock()
-		defer sessionsMutex.RUnlock()
-		users = make([]string, 0, len(sessions))
-		for username := range sessions {
-			users = append(users, username)
-		}
-	}()
+func broadcastSessionsList() {
+	users := sessionManager.GetAllUsers()
 
-	broadcastExcept(WSMessage{
+	msg := WSMessage{
 		Method:    "OtherSessionConnected",
 		Data:      users,
 		Timestamp: time.Now().UnixMilli(),
-	}, senderConn)
-}
-
-func broadcastExcept(msg WSMessage, senderConn *websocket.Conn) {
-	sessionsMutex.RLock()
-	defer sessionsMutex.RUnlock()
-
-	for _, userSessions := range sessions {
-		for _, sess := range userSessions {
-			if !sess.Closed && sess.Conn != senderConn {
-				if err := sess.Conn.WriteJSON(msg); err != nil {
-					log.Printf("broadcast error to %s (device %s): %v", sess.Username, sess.DeviceID, err)
-					sess.Closed = true
-				}
-			}
-		}
 	}
-}
 
-func broadcastToUserExcept(username string, msg WSMessage, senderConn *websocket.Conn) {
-	sessionsMutex.RLock()
-	defer sessionsMutex.RUnlock()
-
-	if userSessions, exists := sessions[username]; exists {
-		for _, sess := range userSessions {
-			if sess.Conn == senderConn || sess.Closed {
-				continue
-			}
-			if err := sess.Conn.WriteJSON(msg); err != nil {
-				log.Printf("broadcast error to %s (device %s): %v", sess.Username, sess.DeviceID, err)
-				sess.Closed = true
-			}
-		}
-	}
+	sessionManager.BroadcastExcept(msg, nil)
 }
