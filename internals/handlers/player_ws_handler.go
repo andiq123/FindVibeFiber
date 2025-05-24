@@ -15,7 +15,27 @@ import (
 type WSMessage struct {
 	Method    string      `json:"method"`
 	Data      interface{} `json:"data"`
-	Timestamp int64       `json:"timestamp"`
+	Timestamp json.Number `json:"timestamp"`
+}
+
+// GetTimestamp returns the timestamp as int64, handling both integer and float values
+func (m *WSMessage) GetTimestamp() int64 {
+	if m.Timestamp == "" {
+		return time.Now().UnixMilli()
+	}
+
+	// Try to parse as int64 first
+	if ts, err := m.Timestamp.Int64(); err == nil {
+		return ts
+	}
+
+	// If that fails, try to parse as float and convert to int64
+	if ts, err := m.Timestamp.Float64(); err == nil {
+		return int64(ts)
+	}
+
+	// If all parsing fails, return current time
+	return time.Now().UnixMilli()
 }
 
 type Session struct {
@@ -147,7 +167,7 @@ func (sm *SessionManager) checkSessionHealth() {
 		// Send ping to check if connection is alive
 		pingMsg := WSMessage{
 			Method:    "Ping",
-			Timestamp: time.Now().UnixMilli(),
+			Timestamp: json.Number(fmt.Sprintf("%d", time.Now().UnixMilli())),
 		}
 
 		if err := session.SendMessage(pingMsg); err != nil {
@@ -373,6 +393,8 @@ func PlayerWebSocketHandler() func(*websocket.Conn) {
 	}
 }
 
+// Add this to your existing handler.go file
+
 func handleMessage(c *websocket.Conn, msg *WSMessage, currentSession **Session) error {
 	switch msg.Method {
 	case "Connect":
@@ -381,26 +403,45 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, currentSession **Session) 
 			return fmt.Errorf("invalid username in connect message")
 		}
 
-		// Create new session
 		*currentSession = sessionManager.AddSession(username, c)
 		log.Printf("User %s connected from device %s", username, (*currentSession).DeviceID)
 
-		// Send connection confirmation
 		confirmMsg := WSMessage{
 			Method: "Connected",
 			Data: map[string]string{
 				"deviceId":  (*currentSession).DeviceID,
 				"sessionId": (*currentSession).ID,
 			},
-			Timestamp: time.Now().UnixMilli(),
+			Timestamp: json.Number(fmt.Sprintf("%d", time.Now().UnixMilli())),
 		}
 
 		if err := (*currentSession).SendMessage(confirmMsg); err != nil {
 			return fmt.Errorf("failed to send connection confirmation: %w", err)
 		}
 
-		// Broadcast updated user list to all other sessions
 		broadcastSessionsList()
+
+	case "LatencyPing":
+		if *currentSession == nil {
+			return fmt.Errorf("no active session for LatencyPing")
+		}
+
+		// Handle latency measurement ping
+		if data, ok := msg.Data.(map[string]interface{}); ok {
+			pongMsg := WSMessage{
+				Method: "LatencyPong",
+				Data: map[string]interface{}{
+					"clientTime":  data["clientTime"],
+					"serverTime":  time.Now().UnixMilli(),
+					"calibration": data["calibration"],
+				},
+				Timestamp: json.Number(fmt.Sprintf("%d", time.Now().UnixMilli())),
+			}
+
+			if err := (*currentSession).SendMessage(pongMsg); err != nil {
+				return fmt.Errorf("failed to send latency pong: %w", err)
+			}
+		}
 
 	case "Disconnect":
 		if *currentSession != nil {
@@ -413,6 +454,17 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, currentSession **Session) 
 	case "Pong":
 		if *currentSession != nil {
 			(*currentSession).UpdatePing()
+
+			// If pong contains timing data, we can use it for server-side latency calculation
+			if data, ok := msg.Data.(map[string]interface{}); ok {
+				if serverTime, ok := data["serverTime"].(float64); ok {
+					if _, ok := data["clientTime"].(float64); ok {
+						now := time.Now().UnixMilli()
+						rtt := float64(now) - serverTime
+						log.Printf("RTT for user %s: %.2fms", (*currentSession).Username, rtt)
+					}
+				}
+			}
 		}
 
 	case "UpdateTime":
@@ -420,18 +472,18 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, currentSession **Session) 
 			return fmt.Errorf("no active session for UpdateTime")
 		}
 
-		// Parse timestamp from data if provided
+		// Enhanced UpdateTime with platform information
 		if data, ok := msg.Data.(map[string]interface{}); ok {
-			if eventTime, ok := data["timestamp"].(float64); ok {
-				msg.Timestamp = int64(eventTime)
+			// Log platform-specific information for debugging
+			if platform, ok := data["platform"].(string); ok {
+				if audioDelay, ok := data["audioDelay"].(float64); ok {
+					log.Printf("UpdateTime from %s platform with %dms audio delay",
+						platform, int(audioDelay))
+				}
 			}
 		}
 
-		// Ensure timestamp is set
-		if msg.Timestamp == 0 {
-			msg.Timestamp = time.Now().UnixMilli()
-		}
-
+		msg.Timestamp = json.Number(fmt.Sprintf("%d", msg.GetTimestamp()))
 		sessionManager.BroadcastToUserExcept((*currentSession).Username, *msg, *currentSession)
 
 	case "SetSong", "Play", "Pause":
@@ -439,9 +491,12 @@ func handleMessage(c *websocket.Conn, msg *WSMessage, currentSession **Session) 
 			return fmt.Errorf("no active session for %s", msg.Method)
 		}
 
-		// Ensure timestamp is set
-		if msg.Timestamp == 0 {
-			msg.Timestamp = time.Now().UnixMilli()
+		msg.Timestamp = json.Number(fmt.Sprintf("%d", msg.GetTimestamp()))
+
+		// Add platform context for play/pause commands
+		if msg.Method == "Play" || msg.Method == "Pause" {
+			log.Printf("Broadcasting %s command from user %s at timestamp %d",
+				msg.Method, (*currentSession).Username, msg.GetTimestamp())
 		}
 
 		sessionManager.BroadcastToUserExcept((*currentSession).Username, *msg, *currentSession)
@@ -459,7 +514,7 @@ func broadcastSessionsList() {
 	msg := WSMessage{
 		Method:    "OtherSessionConnected",
 		Data:      users,
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: json.Number(fmt.Sprintf("%d", time.Now().UnixMilli())),
 	}
 
 	sessionManager.BroadcastExcept(msg, nil)
