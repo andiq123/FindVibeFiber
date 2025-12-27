@@ -23,5 +23,13 @@ go.work.sum
 
 # env file
 *.env
-cache
+cache/
+music_cache/
 *.db
+tmp/
+findvibefiber
+findVibe
+
+# IDE folders
+.vs/
+.vscode/
