@@ -1,9 +1,11 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -51,6 +53,10 @@ func (mfs *MusicFinderService) FindMusic(ctx context.Context, query string) ([]d
 		return nil, fmt.Errorf("search: request creation failed: %w", err)
 	}
 
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
 	resp, err := mfs.httpClient.Do(req)
 	if err != nil {
 		log.Printf("[MusicFinder] ERROR: HTTP request failed for query %q: %v", query, err)
@@ -62,6 +68,17 @@ func (mfs *MusicFinderService) FindMusic(ctx context.Context, query string) ([]d
 		log.Printf("[MusicFinder] ERROR: Unexpected status code %d for query %q", resp.StatusCode, query)
 		return nil, fmt.Errorf("search: unexpected status code: %d", resp.StatusCode)
 	}
+
+	// Debug: Read and log the response body to see what we're actually getting
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[MusicFinder] ERROR: Failed to read response body for query %q: %v", query, err)
+		return nil, fmt.Errorf("search: failed to read response body: %w", err)
+	}
+	// Restore the body for goquery
+	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	log.Printf("[MusicFinder] DEBUG: HTML Content for query %q:\n%s", query, string(bodyBytes))
 
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
