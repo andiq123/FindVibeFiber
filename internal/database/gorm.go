@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
