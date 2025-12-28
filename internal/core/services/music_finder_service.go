@@ -69,6 +69,18 @@ func (mfs *MusicFinderService) FindMusic(ctx context.Context, query string) ([]d
 		return nil, fmt.Errorf("search: failed to parse HTML: %w", err)
 	}
 
+	// Debug: Log what we're looking for and what we find
+	resultsContainer := doc.Find("#results")
+	log.Printf("[MusicFinder] DEBUG: Found #results container: %v, items count: %d", resultsContainer.Length() > 0, doc.Find("#results .item").Length())
+
+	// Debug: Log first item details if any exist
+	firstItem := doc.Find("#results .item").First()
+	if firstItem.Length() > 0 {
+		title := firstItem.Find(".title").Text()
+		artist := firstItem.Find(".artist").Text()
+		log.Printf("[MusicFinder] DEBUG: First item - title: %q, artist: %q", title, artist)
+	}
+
 	results := make([]domain.Song, 0, 40)
 	doc.Find("#results .item").Each(func(i int, s *goquery.Selection) {
 		song := domain.NewSong(
@@ -79,6 +91,8 @@ func (mfs *MusicFinderService) FindMusic(ctx context.Context, query string) ([]d
 		)
 		results = append(results, *song)
 	})
+
+	log.Printf("[MusicFinder] DEBUG: Total songs found: %d for query %q", len(results), query)
 
 	return results, nil
 }
