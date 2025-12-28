@@ -3,8 +3,6 @@ package services
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
-	_ "embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,9 +14,6 @@ import (
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 )
 
-//go:embed ca.pem
-var caCert []byte
-
 type MusicFinderService struct {
 	sourceLink string
 	httpClient *http.Client
@@ -27,14 +22,8 @@ type MusicFinderService struct {
 var _ ports.IMusicFinderService = (*MusicFinderService)(nil)
 
 func NewMusicFinderService() *MusicFinderService {
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		log.Println("[MusicFinder] WARNING: Failed to append CA certificate, using system defaults")
-	}
-
 	tlsConfig := &tls.Config{
-		RootCAs:            caCertPool,
-		InsecureSkipVerify: false,
+		MinVersion: tls.VersionTLS12,
 	}
 
 	httpClient := &http.Client{
