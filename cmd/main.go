@@ -11,12 +11,6 @@ import (
 
 func init() {
 	log.Println("Debug mode enabled: ", utils.IsDebug())
-	if utils.IsDebug() {
-		err := utils.LoadEnv()
-		if err != nil {
-			log.Fatalf("Failed to load environment variables: %v", err)
-		}
-	}
 }
 
 func main() {

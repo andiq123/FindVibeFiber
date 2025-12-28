@@ -26,6 +26,7 @@ go.work.sum
 cache/
 music_cache/
 *.db
+app
 tmp/
 findvibefiber
 findVibe

@@ -2,8 +2,6 @@ package utils
 
 import (
 	"os"
-
-	"github.com/joho/godotenv"
 )
 
 func GetEnvOrDef(key, def string) string {
@@ -16,10 +14,7 @@ func GetEnvOrDef(key, def string) string {
 	return value
 }
 
-func LoadEnv() error {
-	return godotenv.Load()
-}
-
 func IsDebug() bool {
-	return GetEnvOrDef("IS_DEBUG", "true") == "true"
+	val, exists := os.LookupEnv("IS_DEBUG")
+	return exists && val == "true"
 }
