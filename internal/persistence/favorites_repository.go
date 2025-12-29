@@ -55,19 +55,29 @@ func (fr *FavoritesRepository) GetFavorites(ctx context.Context, userId string) 
 }
 
 func (fr *FavoritesRepository) ReorderFavorites(ctx context.Context, songReorders []domain.ReorderRequest) error {
-	return fr.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, move := range songReorders {
-			result := tx.Model(&domain.FavoriteSong{}).
-				Where("id = ?", move.SongId).
-				Update("order", move.Order)
+	if len(songReorders) == 0 {
+		return nil
+	}
 
-			if err := result.Error; err != nil {
-				return fmt.Errorf("favorites repository: update order failed for %s: %w", move.SongId, err)
-			}
-			if result.RowsAffected == 0 {
-				return domain.ErrNotFound
-			}
+	return fr.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		caseStmt := "CASE id"
+		ids := make([]interface{}, len(songReorders))
+		params := make([]interface{}, 0, len(songReorders)*2)
+
+		for i, move := range songReorders {
+			caseStmt += " WHEN ? THEN ?"
+			params = append(params, move.SongId, move.Order)
+			ids[i] = move.SongId
 		}
+		caseStmt += " END"
+
+		query := fmt.Sprintf("UPDATE favorite_songs SET \"order\" = %s WHERE id IN ?", caseStmt)
+		params = append(params, ids)
+
+		if err := tx.Exec(query, params...).Error; err != nil {
+			return fmt.Errorf("favorites repository: bulk reorder failed: %w", err)
+		}
+
 		return nil
 	})
 }

@@ -42,6 +42,10 @@ func (fs *FavoritesService) DeleteFavorite(ctx context.Context, songId string) e
 }
 
 func (fs *FavoritesService) GetFavorites(ctx context.Context, userId string) ([]domain.FavoriteSong, error) {
+	if _, err := fs.authRepository.GetUserById(ctx, userId); err != nil {
+		return nil, fmt.Errorf("favorites service: get favorites: user check failed: %w", err)
+	}
+
 	songs, err := fs.favoritesRepository.GetFavorites(ctx, userId)
 	if err != nil {
 		return nil, fmt.Errorf("favorites service: get favorites failed: %w", err)

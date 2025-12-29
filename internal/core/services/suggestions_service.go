@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
@@ -69,12 +69,11 @@ func (ss *SuggestionsService) GetSuggestions(ctx context.Context, query string) 
 		return nil, fmt.Errorf("suggestions: failed to read body: %w", err)
 	}
 
-	body := string(payload)
-	start := strings.IndexByte(body, '[')
-	end := strings.LastIndexByte(body, ']')
+	start := bytes.IndexByte(payload, '[')
+	end := bytes.LastIndexByte(payload, ']')
 
 	if start == -1 || end == -1 {
-		return nil, fmt.Errorf("suggestions: invalid format in response: %s", body)
+		return nil, fmt.Errorf("suggestions: invalid format in response")
 	}
 
 	var data []any

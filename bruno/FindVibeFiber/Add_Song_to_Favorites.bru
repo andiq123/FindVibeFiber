@@ -1,0 +1,21 @@
+meta {
+  name: Add Song to Favorites
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/favorites/{{userId}}
+  body: json
+  auth: none
+}
+
+body:json {
+    {
+      "id": "19aedb59-3a91-4a50-a52e-62b8b3dc9cf1",
+      "title": "Cristal & МОЁТ",
+      "artist": "MORGENSTERN",
+      "image": "//jpg.muzvibe.org/img/05c1cb5283301400d0bf61c753720b8b8c53ad33ade8d4ca58d04de68a497a6b21a990f2f87acfe95d17fb491eb85efea1a5a0316d48add5e1cd5c18e257bd6976cff49ea215e22529376fe5e3b4758723895758ec181e4c53ad1f86163e7470b6fabea74572c826c8bcabc30b0d33cfc1eb49771c015639b2185049852bc522f58d690e998a3162eace6b84ebe82a06d4bc92513d2f9fa72743c538a6c2df55a39f96b6ddfb05937b5b6f93a2f89dc46d8ebc61b692a3fb21f30f.jpg",
+      "link": "//song.muzvibe.org/download/3334363136303030328a3731353332313032360500/6c26c844c122357c6cc1b4fbc66e258a/MORGENSTERN%20-%20Cristal%20%26%20%D0%9C%D0%9E%D0%81%D0%A2.mp3"
+    }
+}

@@ -65,5 +65,5 @@ func (s *Server) Initialize() {
 	port := utils.GetEnvOrDef("PORT", "8080")
 
 	log.Println("Server listening on port: ", port)
-	log.Fatal(app.Listen(fmt.Sprintf(":%v", port), fiber.ListenConfig{EnablePrefork: true}))
+	log.Fatal(app.Listen(fmt.Sprintf(":%v", port), fiber.ListenConfig{EnablePrefork: !utils.IsDebug()}))
 }

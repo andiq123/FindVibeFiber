@@ -29,7 +29,7 @@ music_cache/
 *.pem
 app
 tmp/
-findvibefiber
+/findvibefiber
 findVibe
 
 # IDE folders
