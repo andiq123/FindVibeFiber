@@ -2,15 +2,25 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 )
+
+type musMeta struct {
+	Artist string `json:"artist"`
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+	Img    string `json:"img"`
+	ID     string `json:"id"`
+}
 
 type MuzikaVsemProvider struct {
 	*BaseProvider
@@ -66,16 +76,52 @@ func (mvp *MuzikaVsemProvider) parseResults(body io.Reader, query string) ([]dom
 	rank := 1
 
 	doc.Find("ul.top-tracks__list li.top-tracks__item").Each(func(_ int, s *goquery.Selection) {
-		title := s.Find(".top-tracks__track").Text()
-		artist := s.Find(".top-tracks__artist").Text()
-
-		imageStyle := s.Find(".top-tracks__img").AttrOr("style", "")
-		image := mvp.extractImageURL(imageStyle)
-
-		link := s.Find("a.top-tracks__caption").AttrOr("href", "")
-		if link != "" && link[0] == '/' {
-			link = "https://new.muzikavsem.org" + link
+		metaJSON := s.AttrOr("data-musmeta", "")
+		var meta musMeta
+		if metaJSON != "" {
+			_ = json.Unmarshal([]byte(metaJSON), &meta)
 		}
+
+		// Extract Title and Artist (fallback to meta if needed)
+		title := s.Find(".top-tracks__track").Text()
+		if title == "" {
+			title = meta.Title
+		}
+		artist := s.Find(".top-tracks__artist").Text()
+		if artist == "" {
+			artist = meta.Artist
+		}
+
+		// Extract download path - prioritize the download button as requested
+		downloadPath := s.Find("a.top-tracks__download-btn").AttrOr("href", "")
+		if downloadPath == "" {
+			downloadPath = meta.URL
+		}
+
+		// If we still don't have a path, this isn't a valid entry
+		if downloadPath == "" {
+			return
+		}
+
+		// Extract image
+		image := meta.Img
+		if image == "" {
+			// Fallback to style extraction if meta is missing
+			imageStyle := s.Find(".top-tracks__img").AttrOr("style", "")
+			image = mvp.extractImageFromStyle(imageStyle)
+		}
+
+		if image != "" && image[0] == '/' {
+			image = "https://new.muzikavsem.org" + image
+		}
+
+		// Construct direct link: https://new.muzikavsem.org{downloadPath}
+		// Ensure downloadPath starts with /
+		if !strings.HasPrefix(downloadPath, "/") {
+			downloadPath = "/" + downloadPath
+		}
+
+		link := "https://new.muzikavsem.org" + downloadPath
 
 		if title != "" && artist != "" {
 			song := domain.NewSong(title, artist, image, link)
@@ -94,41 +140,24 @@ func (mvp *MuzikaVsemProvider) parseResults(body io.Reader, query string) ([]dom
 	return results, nil
 }
 
-func (mvp *MuzikaVsemProvider) extractImageURL(styleAttr string) string {
+func (mvp *MuzikaVsemProvider) extractImageFromStyle(styleAttr string) string {
 	if styleAttr == "" {
 		return ""
 	}
 
-	start := -1
-	for i := 0; i < len(styleAttr)-3; i++ {
-		if styleAttr[i:i+4] == "url(" {
-			start = i + 4
-			break
-		}
-	}
-
+	start := strings.Index(styleAttr, "url(")
 	if start == -1 {
 		return ""
 	}
+	start += 4
 
-	end := -1
-	for i := start; i < len(styleAttr); i++ {
-		if styleAttr[i] == ')' {
-			end = i
-			break
-		}
-	}
-
+	end := strings.Index(styleAttr[start:], ")")
 	if end == -1 {
 		return ""
 	}
 
-	imageURL := styleAttr[start:end]
+	imageURL := styleAttr[start : start+end]
 	imageURL = trimQuotes(imageURL)
-
-	if imageURL != "" && imageURL[0] == '/' {
-		imageURL = "https://new.muzikavsem.org" + imageURL
-	}
 
 	return imageURL
 }
