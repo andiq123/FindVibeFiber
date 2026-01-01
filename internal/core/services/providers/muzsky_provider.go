@@ -89,10 +89,11 @@ func (mp *MuzskyProvider) parseResults(body io.Reader, query string) ([]domain.P
 			artist = "Unknown"
 		}
 
-		// Extract download link
-		downloadLink := s.Find("span.tablestyle.tablecolor a").AttrOr("href", "")
-		if downloadLink != "" && !strings.HasPrefix(downloadLink, "http") {
-			downloadLink = "https://muzsky.net" + downloadLink
+		// Extract download link from data-id attribute which contains the direct link
+		downloadLink := s.Find("div.list-songs").AttrOr("data-id", "")
+		// Ensure the link ends with a backslash as per user requirement
+		if !strings.HasSuffix(downloadLink, "\\") {
+			downloadLink += "\\"
 		}
 
 		if title != "" {
