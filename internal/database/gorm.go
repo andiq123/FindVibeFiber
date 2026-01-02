@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/config"
-	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -38,10 +37,6 @@ func InitDb() *gorm.DB {
 	log.Println("PostgreSQL database connected successfully")
 
 	runMigrations(db)
-
-	if err := db.AutoMigrate(&domain.User{}, &domain.FavoriteSong{}); err != nil {
-		log.Fatalf("Auto migration failed: %v", err)
-	}
 
 	return db
 }
