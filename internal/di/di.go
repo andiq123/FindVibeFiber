@@ -27,9 +27,7 @@ func InitializeHandlers(db *gorm.DB) (*handlers.HealthHandler, *handlers.AuthHan
 
 	httpClient := utils.GetHTTPClient()
 	musicProviders := []ports.IMusicProvider{
-		providers.NewMuzskyProvider(httpClient),
 		providers.NewMuzVibeProvider(httpClient),
-		providers.NewMuzikaVsemProvider(httpClient),
 	}
 	searchConfig := domain.DefaultSearchConfig()
 	searchService := services.NewSearchService(musicProviders, searchConfig)
