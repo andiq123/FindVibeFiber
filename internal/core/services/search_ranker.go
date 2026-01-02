@@ -101,13 +101,17 @@ func (rr *SearchRanker) calculateMatchScoreOptimized(normalizedTitle, normalized
 	}
 
 	if normalizedArtist == normalizedQuery {
-		return 0.9
+		return 0.95
 	}
 
 	queryWords := strings.Fields(normalizedQuery)
 	titleWords := strings.Fields(normalizedTitle)
 	artistWords := strings.Fields(normalizedArtist)
 	combinedWords := strings.Fields(combinedStr)
+
+	if len(queryWords) == 0 {
+		return 0.5
+	}
 
 	allWordsMatch := true
 	for _, qw := range queryWords {
@@ -117,38 +121,54 @@ func (rr *SearchRanker) calculateMatchScoreOptimized(normalizedTitle, normalized
 		}
 	}
 
-	if allWordsMatch && len(queryWords) > 0 {
-		return 0.95
+	if allWordsMatch {
+		return 0.92
 	}
 
 	titleMatchCount := countMatchingWords(queryWords, titleWords)
 	artistMatchCount := countMatchingWords(queryWords, artistWords)
 	totalWords := len(queryWords)
 
-	if totalWords == 0 {
-		return 0.5
-	}
-
 	titleMatchRatio := float64(titleMatchCount) / float64(totalWords)
 	artistMatchRatio := float64(artistMatchCount) / float64(totalWords)
 
-	combinedScore := (titleMatchRatio * 0.7) + (artistMatchRatio * 0.3)
+	wordMatchScore := (titleMatchRatio * 0.7) + (artistMatchRatio * 0.3)
 
+	substringBonus := 0.0
 	if strings.Contains(normalizedTitle, normalizedQuery) {
-		combinedScore = math.Max(combinedScore, 0.85)
+		substringBonus = 0.15
+	} else if strings.Contains(normalizedArtist, normalizedQuery) {
+		substringBonus = 0.10
 	}
 
-	similarity := calculateSimilarity(normalizedQuery, combinedStr)
-	fuzzyScore := similarity * 0.8
+	titleSimilarity := calculateSimilarity(normalizedQuery, normalizedTitle)
+	artistSimilarity := calculateSimilarity(normalizedQuery, normalizedArtist)
+	combinedSimilarity := calculateSimilarity(normalizedQuery, combinedStr)
 
-	return math.Max(combinedScore, fuzzyScore)
+	fuzzyScore := math.Max(
+		math.Max(titleSimilarity*0.85, artistSimilarity*0.75),
+		combinedSimilarity*0.80,
+	)
+
+	partialMatchScore := 0.0
+	if titleMatchCount > 0 || artistMatchCount > 0 {
+		partialMatchScore = wordMatchScore * 0.85
+	}
+
+	finalScore := math.Max(
+		math.Max(partialMatchScore, fuzzyScore),
+		wordMatchScore+substringBonus,
+	)
+
+	return math.Min(finalScore, 0.91)
 }
 
 func (rr *SearchRanker) calculatePositionScore(position int) float64 {
 	if position <= 0 {
 		position = 1
 	}
-	return 1.0 / (1.0 + math.Log(float64(position)))
+
+	return 1.0 / math.Pow(float64(position), 0.15)
 }
 
 func (rr *SearchRanker) calculateDiversityBonusOptimized(normalizedArtist string, artistCount map[string]int) float64 {
@@ -158,27 +178,43 @@ func (rr *SearchRanker) calculateDiversityBonusOptimized(normalizedArtist string
 		return 1.0
 	}
 
-	return 1.0 / float64(count)
+	return 1.0 / (1.0 + math.Log(float64(count)))
 }
 
 func (rr *SearchRanker) calculateRemixPenaltyOptimized(normalizedTitle, normalizedQuery string) float64 {
 	queryWords := strings.Fields(normalizedQuery)
 	titleWords := strings.Fields(normalizedTitle)
 
-	remixKeywordsList := []string{"remix", "mix", "edit", "version", "cover", "live", "acoustic", "instrumental", "extended", "remaster", "rework", "bootleg", "mashup", "dub"}
+	heavyPenaltyKeywords := []string{"remix", "bootleg", "mashup", "rework"}
+	mediumPenaltyKeywords := []string{"cover", "instrumental", "karaoke"}
+	lightPenaltyKeywords := []string{"live", "acoustic", "edit", "version", "extended", "remaster", "dub"}
 
-	queryHasRemixKeyword := slices.ContainsFunc(queryWords, func(word string) bool {
-		return slices.Contains(remixKeywordsList, word)
+	queryHasVariantKeyword := slices.ContainsFunc(queryWords, func(word string) bool {
+		return slices.Contains(heavyPenaltyKeywords, word) ||
+			slices.Contains(mediumPenaltyKeywords, word) ||
+			slices.Contains(lightPenaltyKeywords, word)
 	}) || strings.Contains(normalizedQuery, "radio edit")
 
-	if queryHasRemixKeyword {
+	if queryHasVariantKeyword {
 		return 1.0
 	}
 
 	if slices.ContainsFunc(titleWords, func(word string) bool {
-		return slices.Contains(remixKeywordsList, word)
-	}) || strings.Contains(normalizedTitle, "radio edit") {
+		return slices.Contains(heavyPenaltyKeywords, word)
+	}) {
 		return 0.5
+	}
+
+	if slices.ContainsFunc(titleWords, func(word string) bool {
+		return slices.Contains(mediumPenaltyKeywords, word)
+	}) {
+		return 0.65
+	}
+
+	if slices.ContainsFunc(titleWords, func(word string) bool {
+		return slices.Contains(lightPenaltyKeywords, word)
+	}) || strings.Contains(normalizedTitle, "radio edit") {
+		return 0.8
 	}
 
 	return 1.0

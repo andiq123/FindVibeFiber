@@ -9,28 +9,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sync"
+
+	"github.com/andiq123/FindVibeFiber/internal/utils"
 )
 
 type SuggestionsService struct {
 	client *http.Client
 }
 
-var (
-	httpClientOnce sync.Once
-	httpClient     *http.Client
-)
-
-func getHttpClient() *http.Client {
-	httpClientOnce.Do(func() {
-		httpClient = &http.Client{}
-	})
-	return httpClient
-}
-
 func NewSuggestionsService() *SuggestionsService {
 	return &SuggestionsService{
-		client: getHttpClient(),
+		client: utils.GetHTTPClient(),
 	}
 }
 
