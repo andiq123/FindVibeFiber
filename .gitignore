@@ -21,16 +21,18 @@
 go.work
 go.work.sum
 
-# env file
 *.env
+.env.example
 cache/
 music_cache/
-*.db
 *.pem
 app
 tmp/
 /findvibefiber
 findVibe
+
+# PostgreSQL
+*.sql.backup
 
 # IDE folders
 .vs/
