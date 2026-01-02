@@ -11,7 +11,6 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
-	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 )
 
 type musMeta struct {
@@ -26,8 +25,6 @@ type MuzikaVsemProvider struct {
 	*BaseProvider
 	sourceURL string
 }
-
-var _ ports.IMusicProvider = (*MuzikaVsemProvider)(nil)
 
 func NewMuzikaVsemProvider(client *http.Client) *MuzikaVsemProvider {
 	return &MuzikaVsemProvider{

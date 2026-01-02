@@ -10,16 +10,11 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
-
-	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 )
 
 type SuggestionsService struct {
-	sourceLink string
-	client     *http.Client
+	client *http.Client
 }
-
-var _ ports.ISuggestionsService = (*SuggestionsService)(nil)
 
 var (
 	httpClientOnce sync.Once
@@ -40,14 +35,7 @@ func NewSuggestionsService() *SuggestionsService {
 }
 
 func (ss *SuggestionsService) GetSuggestions(ctx context.Context, query string) ([]string, error) {
-	params := url.Values{}
-	params.Add("client", "youtube")
-	params.Add("ds", "yt")
-	params.Add("gl", "RO")
-	params.Add("hl", "ro")
-	params.Add("q", query)
-
-	apiURL := "https://suggestqueries.google.com/complete/search?" + params.Encode()
+	apiURL := "https://suggestqueries.google.com/complete/search?client=youtube&ds=yt&gl=RO&hl=ro&q=" + url.QueryEscape(query)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {

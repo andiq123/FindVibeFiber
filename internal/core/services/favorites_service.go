@@ -13,7 +13,6 @@ type FavoritesService struct {
 	authRepository      ports.IAuthRepository
 }
 
-var _ ports.IFavoritesService = (*FavoritesService)(nil)
 
 func NewFavoritesService(favoritesRepository ports.IFavoritesRepository, authRepository ports.IAuthRepository) *FavoritesService {
 	return &FavoritesService{
@@ -27,7 +26,7 @@ func (fs *FavoritesService) AddFavorite(ctx context.Context, userId string, song
 	if err != nil {
 		return fmt.Errorf("favorites service: add favorite: user look up failed: %w", err)
 	}
-	song.UserID = user.Id
+	song.UserID = user.ID
 	if err := fs.favoritesRepository.AddFavorite(ctx, userId, song); err != nil {
 		return fmt.Errorf("favorites service: add favorite: repository call failed: %w", err)
 	}

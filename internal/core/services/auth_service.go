@@ -13,7 +13,6 @@ type AuthService struct {
 	authRepository ports.IAuthRepository
 }
 
-var _ ports.IAuthService = (*AuthService)(nil)
 
 func NewAuthService(repository ports.IAuthRepository) *AuthService {
 	return &AuthService{

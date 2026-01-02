@@ -17,8 +17,9 @@ func main() {
 	db := database.InitDb()
 	defer database.CloseDb(db)
 
-	healthHandlers, authHandlers, favoritesHandlers, suggestionsHandlers, musicFinderHandlers := di.InitializeHandlers(db)
+	healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler := di.InitializeHandlers(db)
 
-	httpServer := server.NewServer(healthHandlers, authHandlers, favoritesHandlers, suggestionsHandlers, musicFinderHandlers)
-	httpServer.Initialize()
+	srv := server.NewServer(healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler)
+	srv.Initialize()
+	srv.Start()
 }

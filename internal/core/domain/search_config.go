@@ -1,10 +1,8 @@
 package domain
 
 type SearchConfig struct {
-	MaxResults           int
-	EnableParallelSearch bool
-	RankingWeights       RankingWeights
-	EnableDeduplication  bool
+	MaxResults     int
+	RankingWeights RankingWeights
 }
 
 type RankingWeights struct {
@@ -16,14 +14,12 @@ type RankingWeights struct {
 
 func DefaultSearchConfig() *SearchConfig {
 	return &SearchConfig{
-		MaxResults:           20,
-		EnableParallelSearch: true,
+		MaxResults: 20,
 		RankingWeights: RankingWeights{
 			ProviderPriority: 0.3,
 			MatchScore:       0.4,
 			Position:         0.2,
 			Diversity:        0.1,
 		},
-		EnableDeduplication: true,
 	}
 }

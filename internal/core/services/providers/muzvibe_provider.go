@@ -10,15 +10,12 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
-	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 )
 
 type MuzVibeProvider struct {
 	*BaseProvider
 	sourceURL string
 }
-
-var _ ports.IMusicProvider = (*MuzVibeProvider)(nil)
 
 func NewMuzVibeProvider(client *http.Client) *MuzVibeProvider {
 	return &MuzVibeProvider{

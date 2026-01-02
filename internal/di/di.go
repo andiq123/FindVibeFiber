@@ -1,29 +1,29 @@
 package di
 
 import (
-	"github.com/andiq123/FindVibeFiber/internal/api"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 	"github.com/andiq123/FindVibeFiber/internal/core/services"
 	"github.com/andiq123/FindVibeFiber/internal/core/services/providers"
-	"github.com/andiq123/FindVibeFiber/internal/persistence"
+	"github.com/andiq123/FindVibeFiber/internal/handlers"
+	"github.com/andiq123/FindVibeFiber/internal/repository"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"gorm.io/gorm"
 )
 
-func InitializeHandlers(db *gorm.DB) (*api.HealthHandler, *api.AuthHandler, *api.FavoritesHandler, *api.SuggestionsHandler, *api.MusicFinderHandler) {
-	healthHandler := api.NewHealthHandler()
+func InitializeHandlers(db *gorm.DB) (*handlers.HealthHandler, *handlers.AuthHandler, *handlers.FavoritesHandler, *handlers.SuggestionsHandler, *handlers.SearchHandler) {
+	healthHandler := handlers.NewHealthHandler()
 
-	authRepository := persistence.NewAuthRepository(db)
+	authRepository := repository.NewAuthRepository(db)
 	authService := services.NewAuthService(authRepository)
-	authHandler := api.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandler(authService)
 
-	favoritesRepository := persistence.NewFavoritesRepository(db)
+	favoritesRepository := repository.NewFavoritesRepository(db)
 	favoritesService := services.NewFavoritesService(favoritesRepository, authRepository)
-	favoritesHandler := api.NewFavoritesHandler(favoritesService)
+	favoritesHandler := handlers.NewFavoritesHandler(favoritesService)
 
 	suggestionsService := services.NewSuggestionsService()
-	suggestionsHandler := api.NewSuggestionsHandler(suggestionsService)
+	suggestionsHandler := handlers.NewSuggestionsHandler(suggestionsService)
 
 	httpClient := utils.GetHTTPClient()
 	musicProviders := []ports.IMusicProvider{
@@ -32,8 +32,8 @@ func InitializeHandlers(db *gorm.DB) (*api.HealthHandler, *api.AuthHandler, *api
 		providers.NewMuzikaVsemProvider(httpClient),
 	}
 	searchConfig := domain.DefaultSearchConfig()
-	musicAggregatorService := services.NewMusicAggregatorService(musicProviders, searchConfig)
-	musicFinderHandler := api.NewMusicFinderHandler(musicAggregatorService)
+	searchService := services.NewSearchService(musicProviders, searchConfig)
+	searchHandler := handlers.NewSearchHandler(searchService)
 
-	return healthHandler, authHandler, favoritesHandler, suggestionsHandler, musicFinderHandler
+	return healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler
 }
