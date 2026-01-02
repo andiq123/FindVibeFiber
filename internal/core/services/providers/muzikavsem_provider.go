@@ -72,7 +72,7 @@ func (mvp *MuzikaVsemProvider) parseResults(body io.Reader, query string) ([]dom
 		return nil, fmt.Errorf("muzikavsem: failed to parse HTML: %w", err)
 	}
 
-	var results []domain.ProviderResult
+	results := make([]domain.ProviderResult, 0, 40)
 	rank := 1
 
 	doc.Find("ul.top-tracks__list li.top-tracks__item").Each(func(_ int, s *goquery.Selection) {
@@ -82,7 +82,6 @@ func (mvp *MuzikaVsemProvider) parseResults(body io.Reader, query string) ([]dom
 			_ = json.Unmarshal([]byte(metaJSON), &meta)
 		}
 
-		// Extract Title and Artist (fallback to meta if needed)
 		title := s.Find(".top-tracks__track").Text()
 		if title == "" {
 			title = meta.Title
@@ -92,21 +91,17 @@ func (mvp *MuzikaVsemProvider) parseResults(body io.Reader, query string) ([]dom
 			artist = meta.Artist
 		}
 
-		// Extract download path - prioritize the download button as requested
 		downloadPath := s.Find("a.top-tracks__download-btn").AttrOr("href", "")
 		if downloadPath == "" {
 			downloadPath = meta.URL
 		}
 
-		// If we still don't have a path, this isn't a valid entry
 		if downloadPath == "" {
 			return
 		}
 
-		// Extract image
 		image := meta.Img
 		if image == "" {
-			// Fallback to style extraction if meta is missing
 			imageStyle := s.Find(".top-tracks__img").AttrOr("style", "")
 			image = mvp.extractImageFromStyle(imageStyle)
 		}
@@ -115,8 +110,6 @@ func (mvp *MuzikaVsemProvider) parseResults(body io.Reader, query string) ([]dom
 			image = "https://new.muzikavsem.org" + image
 		}
 
-		// Construct direct link: https://new.muzikavsem.org{downloadPath}
-		// Ensure downloadPath starts with /
 		if !strings.HasPrefix(downloadPath, "/") {
 			downloadPath = "/" + downloadPath
 		}

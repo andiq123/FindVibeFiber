@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
@@ -50,14 +51,14 @@ func (mas *MusicAggregatorService) FindMusic(ctx context.Context, query string) 
 	maxPriority := mas.getMaxProviderPriority()
 	scoredResults := mas.ranker.RankResults(allResults, query, maxPriority)
 
-	songs := make([]domain.Song, 0, len(scoredResults))
 	maxResults := mas.config.MaxResults
 	if maxResults <= 0 || maxResults > len(scoredResults) {
 		maxResults = len(scoredResults)
 	}
 
+	songs := make([]domain.Song, maxResults)
 	for i := 0; i < maxResults; i++ {
-		songs = append(songs, scoredResults[i].Result.Song)
+		songs[i] = scoredResults[i].Result.Song
 	}
 
 	return songs, nil
@@ -84,7 +85,12 @@ func (mas *MusicAggregatorService) searchParallel(ctx context.Context, query str
 		close(resultsChan)
 	}()
 
-	allResults := make([]domain.ProviderResult, 0, len(mas.providers)*10)
+	estimatedCapacity := len(mas.providers) * 40
+	if mas.config.MaxResults > 0 && estimatedCapacity > mas.config.MaxResults*2 {
+		estimatedCapacity = mas.config.MaxResults * 2
+	}
+	allResults := make([]domain.ProviderResult, 0, estimatedCapacity)
+
 	for results := range resultsChan {
 		allResults = append(allResults, results...)
 	}
@@ -93,7 +99,11 @@ func (mas *MusicAggregatorService) searchParallel(ctx context.Context, query str
 }
 
 func (mas *MusicAggregatorService) searchSequential(ctx context.Context, query string) []domain.ProviderResult {
-	allResults := make([]domain.ProviderResult, 0, len(mas.providers)*10)
+	estimatedCapacity := len(mas.providers) * 40
+	if mas.config.MaxResults > 0 && estimatedCapacity > mas.config.MaxResults*2 {
+		estimatedCapacity = mas.config.MaxResults * 2
+	}
+	allResults := make([]domain.ProviderResult, 0, estimatedCapacity)
 
 	for _, provider := range mas.providers {
 		results, err := provider.Search(ctx, query)
@@ -107,23 +117,20 @@ func (mas *MusicAggregatorService) searchSequential(ctx context.Context, query s
 }
 
 func (mas *MusicAggregatorService) deduplicateResults(results []domain.ProviderResult) []domain.ProviderResult {
-	seen := make(map[string]*domain.ProviderResult)
+	seen := make(map[string]int, len(results)/2)
 	deduplicated := make([]domain.ProviderResult, 0, len(results))
 
-	for _, result := range results {
-		key := mas.generateDeduplicationKey(result.Song)
+	for i := range results {
+		key := mas.generateDeduplicationKey(results[i].Song)
 
-		if existing, found := seen[key]; found {
-			if mas.shouldReplace(existing, &result) {
-				seen[key] = &result
+		if existingIdx, found := seen[key]; found {
+			if mas.shouldReplace(&deduplicated[existingIdx], &results[i]) {
+				deduplicated[existingIdx] = results[i]
 			}
 		} else {
-			seen[key] = &result
+			seen[key] = len(deduplicated)
+			deduplicated = append(deduplicated, results[i])
 		}
-	}
-
-	for _, result := range seen {
-		deduplicated = append(deduplicated, *result)
 	}
 
 	return deduplicated
@@ -132,7 +139,13 @@ func (mas *MusicAggregatorService) deduplicateResults(results []domain.ProviderR
 func (mas *MusicAggregatorService) generateDeduplicationKey(song domain.Song) string {
 	normalizedTitle := normalizeString(song.Title)
 	normalizedArtist := normalizeString(song.Artist)
-	return normalizedTitle + "|" + normalizedArtist
+
+	var key strings.Builder
+	key.Grow(len(normalizedTitle) + len(normalizedArtist) + 1)
+	key.WriteString(normalizedTitle)
+	key.WriteByte('|')
+	key.WriteString(normalizedArtist)
+	return key.String()
 }
 
 func (mas *MusicAggregatorService) shouldReplace(existing, new *domain.ProviderResult) bool {

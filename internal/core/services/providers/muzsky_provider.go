@@ -63,20 +63,16 @@ func (mp *MuzskyProvider) parseResults(body io.Reader, query string) ([]domain.P
 		return nil, fmt.Errorf("muzsky: failed to parse HTML: %w", err)
 	}
 
-	var results []domain.ProviderResult
+	results := make([]domain.ProviderResult, 0, 40)
 	rank := 1
 
 	doc.Find("table.table-striped tbody tr").Each(func(_ int, s *goquery.Selection) {
-		// Extract image from data-src attribute (lazy loaded)
 		image := s.Find("img.lazy").AttrOr("data-src", "")
-
-		// Extract title and artist from link text
 		linkText := strings.TrimSpace(s.Find("span.tablestyle.tablecolor a").Text())
 		if linkText == "" {
 			return
 		}
 
-		// Parse artist and title from format "Artist - Title"
 		parts := strings.SplitN(linkText, " - ", 2)
 		var title, artist string
 
@@ -84,14 +80,11 @@ func (mp *MuzskyProvider) parseResults(body io.Reader, query string) ([]domain.P
 			artist = strings.TrimSpace(parts[0])
 			title = strings.TrimSpace(parts[1])
 		} else {
-			// If no dash separator, treat entire text as title
 			title = linkText
 			artist = "Unknown"
 		}
 
-		// Extract download link from data-id attribute which contains the direct link
 		downloadLink := s.Find("div.list-songs").AttrOr("data-id", "")
-		// Ensure the link ends with a backslash as per user requirement
 		if !strings.HasSuffix(downloadLink, "\\") {
 			downloadLink += "\\"
 		}

@@ -46,7 +46,8 @@ func (bp *BaseProvider) CalculateBasicMatchScore(song domain.Song, query string)
 		return 0.9
 	}
 
-	if strings.Contains(normalizedTitle, normalizedQuery) {
+	titleContains := strings.Contains(normalizedTitle, normalizedQuery)
+	if titleContains {
 		return 0.8
 	}
 
@@ -55,8 +56,11 @@ func (bp *BaseProvider) CalculateBasicMatchScore(song domain.Song, query string)
 	}
 
 	queryWords := strings.Fields(normalizedQuery)
-	titleWords := strings.Fields(normalizedTitle)
+	if len(queryWords) == 0 {
+		return 0.5
+	}
 
+	titleWords := strings.Fields(normalizedTitle)
 	matches := 0
 	for _, qw := range queryWords {
 		for _, tw := range titleWords {
@@ -67,11 +71,7 @@ func (bp *BaseProvider) CalculateBasicMatchScore(song domain.Song, query string)
 		}
 	}
 
-	if len(queryWords) > 0 {
-		return float64(matches) / float64(len(queryWords)) * 0.6
-	}
-
-	return 0.5
+	return float64(matches) / float64(len(queryWords)) * 0.6
 }
 
 func (bp *BaseProvider) AddBrowserHeaders(req *http.Request, referer string) {
