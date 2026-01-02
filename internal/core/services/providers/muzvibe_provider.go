@@ -63,7 +63,7 @@ func (mvp *MuzVibeProvider) parseResults(body io.Reader, query string) ([]domain
 		return nil, fmt.Errorf("muzvibe: failed to parse HTML: %w", err)
 	}
 
-	var results []domain.ProviderResult
+	results := make([]domain.ProviderResult, 0, 40)
 	rank := 1
 
 	doc.Find("#results .item").Each(func(_ int, s *goquery.Selection) {

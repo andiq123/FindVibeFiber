@@ -9,12 +9,20 @@ import (
 )
 
 type ResultRanker struct {
-	weights domain.RankingWeights
+	weights       domain.RankingWeights
+	remixKeywords map[string]struct{}
 }
 
 func NewResultRanker(weights domain.RankingWeights) *ResultRanker {
+	remixKeywords := map[string]struct{}{
+		"remix": {}, "mix": {}, "edit": {}, "version": {}, "cover": {}, "live": {},
+		"acoustic": {}, "instrumental": {}, "radio edit": {}, "extended": {},
+		"remaster": {}, "rework": {}, "bootleg": {}, "mashup": {}, "dub": {},
+	}
+
 	return &ResultRanker{
-		weights: weights,
+		weights:       weights,
+		remixKeywords: remixKeywords,
 	}
 }
 
@@ -23,25 +31,37 @@ type ScoredResult struct {
 	FinalScore float64
 }
 
+type normalizedSong struct {
+	title  string
+	artist string
+}
+
 func (rr *ResultRanker) RankResults(results []domain.ProviderResult, query string, maxProviderPriority int) []ScoredResult {
 	if len(results) == 0 {
 		return []ScoredResult{}
 	}
 
-	scored := make([]ScoredResult, 0, len(results))
-	artistCount := make(map[string]int)
+	scored := make([]ScoredResult, len(results))
+	artistCount := make(map[string]int, len(results)/2)
+	normalizedQuery := normalizeString(query)
 
-	for _, result := range results {
-		normalizedArtist := normalizeString(result.Song.Artist)
-		artistCount[normalizedArtist]++
+	normalizedSongs := make([]normalizedSong, len(results))
+	for i := range results {
+		normalizedSongs[i].artist = normalizeString(results[i].Song.Artist)
+		normalizedSongs[i].title = normalizeString(results[i].Song.Title)
+		artistCount[normalizedSongs[i].artist]++
 	}
 
-	for _, result := range results {
+	for i, result := range results {
 		providerScore := rr.calculateProviderScore(result.Provider, maxProviderPriority)
-		matchScore := rr.calculateMatchScore(result.Song, query)
+		matchScore := rr.calculateMatchScoreOptimized(
+			normalizedSongs[i].title,
+			normalizedSongs[i].artist,
+			normalizedQuery,
+		)
 		positionScore := rr.calculatePositionScore(result.ProviderRank)
-		diversityBonus := rr.calculateDiversityBonus(result.Song.Artist, artistCount)
-		remixPenalty := rr.calculateRemixPenalty(result.Song, query)
+		diversityBonus := rr.calculateDiversityBonusOptimized(normalizedSongs[i].artist, artistCount)
+		remixPenalty := rr.calculateRemixPenaltyOptimized(normalizedSongs[i].title, normalizedQuery)
 
 		finalScore := (providerScore * rr.weights.ProviderPriority) +
 			(matchScore * rr.weights.MatchScore) +
@@ -50,10 +70,10 @@ func (rr *ResultRanker) RankResults(results []domain.ProviderResult, query strin
 
 		finalScore *= remixPenalty
 
-		scored = append(scored, ScoredResult{
+		scored[i] = ScoredResult{
 			Result:     result,
 			FinalScore: finalScore,
-		})
+		}
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
@@ -71,32 +91,37 @@ func (rr *ResultRanker) calculateProviderScore(provider string, maxPriority int)
 }
 
 func (rr *ResultRanker) calculateMatchScore(song domain.Song, query string) float64 {
-	normalizedQuery := normalizeString(query)
 	normalizedTitle := normalizeString(song.Title)
 	normalizedArtist := normalizeString(song.Artist)
-	combined := normalizedArtist + " " + normalizedTitle
+	normalizedQuery := normalizeString(query)
+	return rr.calculateMatchScoreOptimized(normalizedTitle, normalizedArtist, normalizedQuery)
+}
 
-	queryWords := strings.Fields(normalizedQuery)
-	titleWords := strings.Fields(normalizedTitle)
-	artistWords := strings.Fields(normalizedArtist)
-	combinedWords := strings.Fields(combined)
+func (rr *ResultRanker) calculateMatchScoreOptimized(normalizedTitle, normalizedArtist, normalizedQuery string) float64 {
+	var combined strings.Builder
+	combined.Grow(len(normalizedArtist) + len(normalizedTitle) + 1)
+	combined.WriteString(normalizedArtist)
+	combined.WriteByte(' ')
+	combined.WriteString(normalizedTitle)
+	combinedStr := combined.String()
 
-	// Exact match on combined artist + title
-	if combined == normalizedQuery {
+	if combinedStr == normalizedQuery {
 		return 1.0
 	}
 
-	// Exact match on title only
 	if normalizedTitle == normalizedQuery {
 		return 0.98
 	}
 
-	// Exact match on artist only
 	if normalizedArtist == normalizedQuery {
 		return 0.9
 	}
 
-	// Check if all query words exist in combined (artist + title)
+	queryWords := strings.Fields(normalizedQuery)
+	titleWords := strings.Fields(normalizedTitle)
+	artistWords := strings.Fields(normalizedArtist)
+	combinedWords := strings.Fields(combinedStr)
+
 	allWordsMatch := true
 	for _, qw := range queryWords {
 		found := false
@@ -133,7 +158,7 @@ func (rr *ResultRanker) calculateMatchScore(song domain.Song, query string) floa
 		combinedScore = math.Max(combinedScore, 0.85)
 	}
 
-	similarity := calculateSimilarity(normalizedQuery, combined)
+	similarity := calculateSimilarity(normalizedQuery, combinedStr)
 	fuzzyScore := similarity * 0.8
 
 	return math.Max(combinedScore, fuzzyScore)
@@ -146,8 +171,7 @@ func (rr *ResultRanker) calculatePositionScore(position int) float64 {
 	return 1.0 / (1.0 + math.Log(float64(position)))
 }
 
-func (rr *ResultRanker) calculateDiversityBonus(artist string, artistCount map[string]int) float64 {
-	normalizedArtist := normalizeString(artist)
+func (rr *ResultRanker) calculateDiversityBonusOptimized(normalizedArtist string, artistCount map[string]int) float64 {
 	count := artistCount[normalizedArtist]
 
 	if count <= 1 {
@@ -157,31 +181,37 @@ func (rr *ResultRanker) calculateDiversityBonus(artist string, artistCount map[s
 	return 1.0 / float64(count)
 }
 
-func (rr *ResultRanker) calculateRemixPenalty(song domain.Song, query string) float64 {
-	normalizedTitle := normalizeString(song.Title)
-	normalizedQuery := normalizeString(query)
+func (rr *ResultRanker) calculateRemixPenaltyOptimized(normalizedTitle, normalizedQuery string) float64 {
+	queryWords := strings.Fields(normalizedQuery)
+	titleWords := strings.Fields(normalizedTitle)
 
-	remixKeywords := []string{
-		"remix", "mix", "edit", "version", "cover", "live",
-		"acoustic", "instrumental", "radio edit", "extended",
-		"remaster", "rework", "bootleg", "mashup", "dub",
-	}
-
-	// Check if query contains remix keywords - if so, user wants a remix
-	for _, keyword := range remixKeywords {
-		if strings.Contains(normalizedQuery, keyword) {
-			return 1.0 // No penalty if user is searching for remixes
+	queryHasRemixKeyword := false
+	for _, word := range queryWords {
+		if _, exists := rr.remixKeywords[word]; exists {
+			queryHasRemixKeyword = true
+			break
 		}
 	}
 
-	// Check if title contains remix keywords but query doesn't
-	for _, keyword := range remixKeywords {
-		if strings.Contains(normalizedTitle, keyword) {
-			return 0.5 // Heavy penalty for remixes when user didn't ask for them
+	if !queryHasRemixKeyword && strings.Contains(normalizedQuery, "radio edit") {
+		queryHasRemixKeyword = true
+	}
+
+	if queryHasRemixKeyword {
+		return 1.0
+	}
+
+	for _, word := range titleWords {
+		if _, exists := rr.remixKeywords[word]; exists {
+			return 0.5
 		}
 	}
 
-	return 1.0 // No penalty for original songs
+	if strings.Contains(normalizedTitle, "radio edit") {
+		return 0.5
+	}
+
+	return 1.0
 }
 
 func normalizeString(s string) string {
@@ -226,31 +256,38 @@ func levenshteinDistance(s1, s2 string) int {
 		return len1
 	}
 
-	matrix := make([][]int, len1+1)
-	for i := range matrix {
-		matrix[i] = make([]int, len2+1)
-		matrix[i][0] = i
-	}
-	for j := 0; j <= len2; j++ {
-		matrix[0][j] = j
+	if len1 > len2 {
+		s1, s2 = s2, s1
+		len1, len2 = len2, len1
 	}
 
-	for i := 1; i <= len1; i++ {
-		for j := 1; j <= len2; j++ {
+	prevRow := make([]int, len1+1)
+	currRow := make([]int, len1+1)
+
+	for i := range prevRow {
+		prevRow[i] = i
+	}
+
+	for j := 1; j <= len2; j++ {
+		currRow[0] = j
+
+		for i := 1; i <= len1; i++ {
 			cost := 1
 			if s1[i-1] == s2[j-1] {
 				cost = 0
 			}
 
-			matrix[i][j] = min(
-				matrix[i-1][j]+1,
-				matrix[i][j-1]+1,
-				matrix[i-1][j-1]+cost,
+			currRow[i] = min(
+				prevRow[i]+1,
+				currRow[i-1]+1,
+				prevRow[i-1]+cost,
 			)
 		}
+
+		prevRow, currRow = currRow, prevRow
 	}
 
-	return matrix[len1][len2]
+	return prevRow[len1]
 }
 
 func min(a, b, c int) int {
