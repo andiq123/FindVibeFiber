@@ -56,6 +56,7 @@ func (rr *SearchRanker) RankResults(results []domain.ProviderResult, query strin
 		positionScore := rr.calculatePositionScore(result.ProviderRank)
 		diversityBonus := rr.calculateDiversityBonusOptimized(normalizedSongs[i].artist, artistCount)
 		remixPenalty := rr.calculateRemixPenaltyOptimized(normalizedSongs[i].title, normalizedQuery)
+		metadataBonus := rr.calculateMetadataScore(result.Song)
 
 		finalScore := (providerScore * rr.weights.ProviderPriority) +
 			(matchScore * rr.weights.MatchScore) +
@@ -63,6 +64,7 @@ func (rr *SearchRanker) RankResults(results []domain.ProviderResult, query strin
 			(diversityBonus * rr.weights.Diversity)
 
 		finalScore *= remixPenalty
+		finalScore += metadataBonus
 
 		scored[i] = ScoredResult{
 			Result:     result,
@@ -218,6 +220,13 @@ func (rr *SearchRanker) calculateRemixPenaltyOptimized(normalizedTitle, normaliz
 	}
 
 	return 1.0
+}
+
+func (rr *SearchRanker) calculateMetadataScore(song domain.Song) float64 {
+	if song.Image != "" {
+		return 0.05
+	}
+	return 0.0
 }
 
 func countMatchingWords(queryWords, targetWords []string) int {

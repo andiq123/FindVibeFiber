@@ -30,6 +30,7 @@ app
 tmp/
 /findvibefiber
 findVibe
+main
 
 # PostgreSQL
 *.sql.backup
