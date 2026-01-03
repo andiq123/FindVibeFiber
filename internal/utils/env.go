@@ -13,8 +13,3 @@ func GetEnvOrDef(key, def string) string {
 
 	return value
 }
-
-func IsDebug() bool {
-	val, exists := os.LookupEnv("IS_DEBUG")
-	return exists && val == "true"
-}

@@ -1,26 +1,23 @@
 package main
 
 import (
-	"log"
+	"os"
 
 	"github.com/andiq123/FindVibeFiber/internal/database"
 	"github.com/andiq123/FindVibeFiber/internal/di"
 	"github.com/andiq123/FindVibeFiber/internal/server"
-	"github.com/andiq123/FindVibeFiber/internal/utils"
-	"gorm.io/gorm"
+	"github.com/joho/godotenv"
 )
 
 func init() {
-	log.Println("Debug mode enabled: ", utils.IsDebug())
+	if os.Getenv("IS_LOCAL") == "true" {
+		_ = godotenv.Load()
+	}
 }
 
 func main() {
-	var db *gorm.DB
-
-	if !utils.IsDebug() {
-		db = database.InitDb()
-		defer database.CloseDb(db)
-	}
+	db := database.InitDb()
+	defer database.CloseDb(db)
 
 	healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler := di.InitializeHandlers(db)
 
