@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 	"github.com/gofiber/fiber/v3"
@@ -21,14 +22,21 @@ func (sh *SearchHandler) Search(c fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "query parameter 'q' is required"})
 	}
 
-	songs, err := sh.searchService.Search(c.Context(), query)
+	page := 1
+	if pageParam := c.Query("page"); pageParam != "" {
+		if p, err := strconv.Atoi(pageParam); err == nil && p > 0 {
+			page = p
+		}
+	}
+
+	response, err := sh.searchService.Search(c.Context(), query, page)
 	if err != nil {
 		return HandleError(c, err)
 	}
 
-	if len(songs) == 0 {
+	if len(response.Songs) == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no songs found"})
 	}
 
-	return c.JSON(songs)
+	return c.JSON(response)
 }

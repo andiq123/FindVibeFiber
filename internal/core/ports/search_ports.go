@@ -7,5 +7,5 @@ import (
 )
 
 type ISearchService interface {
-	Search(ctx context.Context, query string) ([]domain.Song, error)
+	Search(ctx context.Context, query string, page int) (*domain.SearchResponse, error)
 }

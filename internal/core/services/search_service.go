@@ -29,15 +29,15 @@ func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchCon
 	}
 }
 
-func (ss *SearchService) Search(ctx context.Context, query string) ([]domain.Song, error) {
+func (ss *SearchService) Search(ctx context.Context, query string, page int) (*domain.SearchResponse, error) {
 	if len(ss.providers) == 0 {
-		return []domain.Song{}, nil
+		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
 
-	allResults := ss.searchParallel(ctx, query)
+	allResults := ss.searchParallel(ctx, query, page)
 
 	if len(allResults) == 0 {
-		return []domain.Song{}, nil
+		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
 
 	allResults = ss.deduplicateResults(allResults)
@@ -51,14 +51,18 @@ func (ss *SearchService) Search(ctx context.Context, query string) ([]domain.Son
 	}
 
 	songs := make([]domain.Song, maxResults)
+	var pagination *domain.PaginationInfo
 	for i := 0; i < maxResults; i++ {
 		songs[i] = scoredResults[i].Result.Song
+		if pagination == nil && scoredResults[i].Result.Pagination != nil {
+			pagination = scoredResults[i].Result.Pagination
+		}
 	}
 
-	return songs, nil
+	return domain.NewSearchResponse(songs, pagination), nil
 }
 
-func (ss *SearchService) searchParallel(ctx context.Context, query string) []domain.ProviderResult {
+func (ss *SearchService) searchParallel(ctx context.Context, query string, page int) []domain.ProviderResult {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -70,7 +74,17 @@ func (ss *SearchService) searchParallel(ctx context.Context, query string) []dom
 		go func(p ports.IMusicProvider) {
 			defer wg.Done()
 
-			results, err := p.Search(timeoutCtx, query)
+			var results []domain.ProviderResult
+			var err error
+
+			if paginatedProvider, ok := p.(interface {
+				SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error)
+			}); ok {
+				results, err = paginatedProvider.SearchWithPage(timeoutCtx, query, page)
+			} else {
+				results, err = p.Search(timeoutCtx, query)
+			}
+
 			if err == nil && len(results) > 0 {
 				select {
 				case resultsChan <- results:

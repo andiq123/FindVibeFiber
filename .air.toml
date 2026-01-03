@@ -12,7 +12,7 @@ tmp_dir = "tmp"
   exclude_regex = ["_test.go"]
   exclude_unchanged = false
   follow_symlink = false
-  full_bin = ""
+  full_bin = "IS_DEBUG=true ./tmp/main"
   include_dir = ["cmd", "internal"]
   include_ext = ["go", "tpl", "tmpl", "html", "env"]
   include_file = []

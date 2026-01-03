@@ -7,6 +7,7 @@ import (
 	"github.com/andiq123/FindVibeFiber/internal/di"
 	"github.com/andiq123/FindVibeFiber/internal/server"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
+	"gorm.io/gorm"
 )
 
 func init() {
@@ -14,8 +15,12 @@ func init() {
 }
 
 func main() {
-	db := database.InitDb()
-	defer database.CloseDb(db)
+	var db *gorm.DB
+
+	if !utils.IsDebug() {
+		db = database.InitDb()
+		defer database.CloseDb(db)
+	}
 
 	healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler := di.InitializeHandlers(db)
 
