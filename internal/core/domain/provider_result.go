@@ -9,11 +9,11 @@ type ProviderResult struct {
 }
 
 type PaginationInfo struct {
-	CurrentPage  int
-	TotalResults int
-	HasNextPage  bool
-	HasPrevPage  bool
-	TotalPages   int
+	CurrentPage  int  `json:"currentPage"`
+	TotalResults int  `json:"totalResults"`
+	HasNextPage  bool `json:"hasNextPage"`
+	HasPrevPage  bool `json:"hasPrevPage"`
+	TotalPages   int  `json:"totalPages"`
 }
 
 func NewProviderResult(song Song, provider string, matchScore float64, rank int) *ProviderResult {
