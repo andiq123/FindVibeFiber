@@ -17,9 +17,12 @@ type SuggestionsService struct {
 	client *http.Client
 }
 
-func NewSuggestionsService() *SuggestionsService {
+func NewSuggestionsService(client *http.Client) *SuggestionsService {
+	if client == nil {
+		client = utils.GetHTTPClient()
+	}
 	return &SuggestionsService{
-		client: utils.GetHTTPClient(),
+		client: client,
 	}
 }
 

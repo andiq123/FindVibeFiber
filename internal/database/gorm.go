@@ -2,9 +2,9 @@ package database
 
 import (
 	"log"
-	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/config"
+	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -21,20 +21,24 @@ func InitDb() *gorm.DB {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
+		utils.GetLogger().Error("Failed to connect to PostgreSQL", "error", err)
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
+		utils.GetLogger().Error("Failed to get database connection", "error", err)
 		log.Fatalf("Failed to get database connection: %v", err)
 	}
 
-	sqlDB.SetMaxOpenConns(25)
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetConnMaxLifetime(5 * time.Minute)
-	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+	sqlDB.SetMaxOpenConns(dbConfig.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(dbConfig.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(dbConfig.ConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(dbConfig.ConnMaxIdleTime)
 
-	log.Println("PostgreSQL database connected successfully")
+	utils.GetLogger().Info("PostgreSQL database connected successfully",
+		"maxOpenConns", dbConfig.MaxOpenConns,
+		"maxIdleConns", dbConfig.MaxIdleConns)
 
 	runMigrations(db)
 
@@ -64,7 +68,6 @@ func runMigrations(db *gorm.DB) {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_favorite_songs_id_user ON favorite_songs(id, user_uuid)`,
 		`CREATE INDEX IF NOT EXISTS idx_favorite_songs_user_order ON favorite_songs(user_uuid, "order")`,
-		`CREATE INDEX IF NOT EXISTS idx_favorite_songs_user_uuid ON favorite_songs(user_uuid)`,
 		`CREATE INDEX IF NOT EXISTS idx_favorite_songs_created_at ON favorite_songs(created_at)`,
 		`CREATE OR REPLACE FUNCTION update_updated_at_column()
 		RETURNS TRIGGER AS $$
@@ -88,22 +91,24 @@ func runMigrations(db *gorm.DB) {
 
 	for _, migration := range migrations {
 		if err := db.Exec(migration).Error; err != nil {
-			log.Printf("Migration warning: %v", err)
+			utils.GetLogger().Warn("Migration warning", "error", err)
 		}
 	}
 
-	log.Println("Database migrations completed")
+	utils.GetLogger().Info("Database migrations completed")
 }
 
 func CloseDb(db *gorm.DB) {
 	sqlDB, err := db.DB()
 	if err != nil {
+		utils.GetLogger().Error("Failed to get database connection for close", "error", err)
 		log.Fatalf("Failed to get database connection: %v", err)
 	}
 
 	if err := sqlDB.Close(); err != nil {
+		utils.GetLogger().Error("Failed to close database connection", "error", err)
 		log.Fatalf("Failed to close database connection: %v", err)
 	}
 
-	log.Println("Database connection closed")
+	utils.GetLogger().Info("Database connection closed")
 }

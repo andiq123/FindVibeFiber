@@ -12,20 +12,25 @@ import (
 )
 
 type SearchService struct {
-	providers []ports.IMusicProvider
-	ranker    *SearchRanker
-	config    *domain.SearchConfig
+	providers   []ports.IMusicProvider
+	ranker      *SearchRanker
+	config      *domain.SearchConfig
+	searchTimeout time.Duration
 }
 
-func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchConfig) *SearchService {
+func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchConfig, timeout time.Duration) *SearchService {
 	if config == nil {
 		config = domain.DefaultSearchConfig()
 	}
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
 
 	return &SearchService{
-		providers: providers,
-		ranker:    NewSearchRanker(config.RankingWeights),
-		config:    config,
+		providers:     providers,
+		ranker:        NewSearchRanker(config.RankingWeights),
+		config:        config,
+		searchTimeout: timeout,
 	}
 }
 
@@ -63,7 +68,7 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 }
 
 func (ss *SearchService) searchParallel(ctx context.Context, query string, page int) []domain.ProviderResult {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
 	defer cancel()
 
 	resultsChan := make(chan []domain.ProviderResult, len(ss.providers))

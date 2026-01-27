@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
+	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -21,6 +22,10 @@ func (sh *SuggestionsHandler) GetSuggestions(c fiber.Ctx) error {
 	query := c.Query("q")
 	if query == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "query parameter 'q' is required"})
+	}
+
+	if err := utils.ValidateQuery(query); err != nil {
+		return HandleError(c, err)
 	}
 
 	suggestions, err := sh.suggestionsService.GetSuggestions(c.Context(), query)

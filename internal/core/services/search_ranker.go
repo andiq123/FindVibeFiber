@@ -46,8 +46,10 @@ func (rr *SearchRanker) RankResults(results []domain.ProviderResult, query strin
 		artistCount[normalizedSongs[i].artist]++
 	}
 
+	// Calculate provider score once since it's the same for all results
+	providerScore := rr.calculateProviderScore(maxProviderPriority)
+
 	for i, result := range results {
-		providerScore := rr.calculateProviderScore(maxProviderPriority)
 		matchScore := rr.calculateMatchScoreOptimized(
 			normalizedSongs[i].title,
 			normalizedSongs[i].artist,
@@ -184,38 +186,39 @@ func (rr *SearchRanker) calculateDiversityBonusOptimized(normalizedArtist string
 }
 
 func (rr *SearchRanker) calculateRemixPenaltyOptimized(normalizedTitle, normalizedQuery string) float64 {
-	queryWords := strings.Fields(normalizedQuery)
-	titleWords := strings.Fields(normalizedTitle)
-
 	heavyPenaltyKeywords := []string{"remix", "bootleg", "mashup", "rework"}
 	mediumPenaltyKeywords := []string{"cover", "instrumental", "karaoke"}
 	lightPenaltyKeywords := []string{"live", "acoustic", "edit", "version", "extended", "remaster", "dub"}
 
-	queryHasVariantKeyword := slices.ContainsFunc(queryWords, func(word string) bool {
-		return slices.Contains(heavyPenaltyKeywords, word) ||
-			slices.Contains(mediumPenaltyKeywords, word) ||
-			slices.Contains(lightPenaltyKeywords, word)
-	}) || strings.Contains(normalizedQuery, "radio edit")
+	// Helper to check if any word in words matches any keyword in keywords
+	containsKeyword := func(words []string, keywords []string) bool {
+		for _, word := range words {
+			if slices.Contains(keywords, word) {
+				return true
+			}
+		}
+		return false
+	}
 
-	if queryHasVariantKeyword {
+	queryWords := strings.Fields(normalizedQuery)
+	titleWords := strings.Fields(normalizedTitle)
+
+	// If query explicitly requests variant, don't penalize
+	if containsKeyword(queryWords, heavyPenaltyKeywords) ||
+		containsKeyword(queryWords, mediumPenaltyKeywords) ||
+		containsKeyword(queryWords, lightPenaltyKeywords) ||
+		strings.Contains(normalizedQuery, "radio edit") {
 		return 1.0
 	}
 
-	if slices.ContainsFunc(titleWords, func(word string) bool {
-		return slices.Contains(heavyPenaltyKeywords, word)
-	}) {
+	// Check title for variant keywords
+	if containsKeyword(titleWords, heavyPenaltyKeywords) {
 		return 0.5
 	}
-
-	if slices.ContainsFunc(titleWords, func(word string) bool {
-		return slices.Contains(mediumPenaltyKeywords, word)
-	}) {
+	if containsKeyword(titleWords, mediumPenaltyKeywords) {
 		return 0.65
 	}
-
-	if slices.ContainsFunc(titleWords, func(word string) bool {
-		return slices.Contains(lightPenaltyKeywords, word)
-	}) || strings.Contains(normalizedTitle, "radio edit") {
+	if containsKeyword(titleWords, lightPenaltyKeywords) || strings.Contains(normalizedTitle, "radio edit") {
 		return 0.8
 	}
 

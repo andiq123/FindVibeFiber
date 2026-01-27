@@ -1,6 +1,7 @@
 package di
 
 import (
+	"github.com/andiq123/FindVibeFiber/internal/config"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 	"github.com/andiq123/FindVibeFiber/internal/core/services"
@@ -22,15 +23,21 @@ func InitializeHandlers(db *gorm.DB) (*handlers.HealthHandler, *handlers.AuthHan
 	favoritesService := services.NewFavoritesService(favoritesRepository, authRepository)
 	favoritesHandler := handlers.NewFavoritesHandler(favoritesService)
 
-	suggestionsService := services.NewSuggestionsService()
+	appConfig := config.LoadConfig()
+	httpClient := utils.GetHTTPClientWithConfig(
+		appConfig.HTTP.Timeout,
+		appConfig.HTTP.MaxIdleConns,
+		appConfig.HTTP.MaxIdlePerHost,
+		appConfig.HTTP.IdleTimeout,
+	)
+	suggestionsService := services.NewSuggestionsService(httpClient)
 	suggestionsHandler := handlers.NewSuggestionsHandler(suggestionsService)
-
-	httpClient := utils.GetHTTPClient()
 	musicProviders := []ports.IMusicProvider{
 		providers.NewMuzVibeProvider(httpClient),
 	}
 	searchConfig := domain.DefaultSearchConfig()
-	searchService := services.NewSearchService(musicProviders, searchConfig)
+	searchConfig.MaxResults = appConfig.Search.MaxResults
+	searchService := services.NewSearchService(musicProviders, searchConfig, appConfig.Search.Timeout)
 	searchHandler := handlers.NewSearchHandler(searchService)
 
 	return healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler

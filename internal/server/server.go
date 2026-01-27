@@ -3,11 +3,14 @@ package server
 import (
 	"fmt"
 	"log"
+	"time"
 
+	"github.com/andiq123/FindVibeFiber/internal/config"
 	"github.com/andiq123/FindVibeFiber/internal/handlers"
 	"github.com/andiq123/FindVibeFiber/internal/middleware"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/compress"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 )
@@ -38,7 +41,14 @@ func NewServer(
 }
 
 func (s *Server) Initialize() {
-	s.app = fiber.New()
+	appConfig := config.LoadConfig()
+	
+	s.app = fiber.New(fiber.Config{
+		ReadTimeout:  appConfig.Server.ReadTimeout,
+		WriteTimeout: appConfig.Server.WriteTimeout,
+		IdleTimeout:  appConfig.Server.IdleTimeout,
+	})
+	
 	s.setupMiddleware()
 	s.setupRoutes()
 }
@@ -46,13 +56,22 @@ func (s *Server) Initialize() {
 func (s *Server) setupMiddleware() {
 	s.app.Use(cors.New(middleware.NewCORS()))
 	s.app.Use(recover.New())
+	s.app.Use(compress.New(compress.Config{
+		Level: compress.LevelDefault,
+	}))
+	s.app.Use(middleware.RequestSizeLimit())
+	// Rate limit: 100 requests per minute per IP
+	s.app.Use(middleware.RateLimit(100, time.Minute))
 }
 
 func (s *Server) setupRoutes() {
 	s.app.Get("/health", s.healthHandler.GetHealth)
 
-	s.app.Group("/suggest").Get("/", s.suggestionsHandler.GetSuggestions)
-	s.app.Group("/search").Get("/", s.searchHandler.Search)
+	suggestGroup := s.app.Group("/suggest")
+	suggestGroup.Get("/", s.suggestionsHandler.GetSuggestions)
+
+	searchGroup := s.app.Group("/search")
+	searchGroup.Get("/", s.searchHandler.Search)
 
 	favorites := s.app.Group("/favorites")
 	favorites.Get("/:userId", s.favoritesHandler.GetFavorites)
@@ -64,10 +83,12 @@ func (s *Server) setupRoutes() {
 }
 
 func (s *Server) Start() {
-	port := utils.GetEnvOrDef("PORT", "8080")
-	log.Printf("Server listening on port %s", port)
+	appConfig := config.LoadConfig()
+	port := appConfig.Server.Port
+	utils.GetLogger().Info("Server starting", "port", port)
 
 	if err := s.app.Listen(fmt.Sprintf(":%s", port)); err != nil {
+		utils.GetLogger().Error("Server failed to start", "error", err)
 		log.Fatal(err)
 	}
 }

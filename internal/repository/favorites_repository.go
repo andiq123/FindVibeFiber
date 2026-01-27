@@ -59,24 +59,13 @@ func (fr *FavoritesRepository) ReorderFavorites(ctx context.Context, songReorder
 	}
 
 	return fr.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		caseStmt := "CASE id"
-		ids := make([]interface{}, len(songReorders))
-		params := make([]interface{}, 0, len(songReorders)*2)
-
-		for i, move := range songReorders {
-			caseStmt += " WHEN ? THEN ?"
-			params = append(params, move.SongId, move.Order)
-			ids[i] = move.SongId
+		for _, reorder := range songReorders {
+			if err := tx.Model(&domain.FavoriteSong{}).
+				Where("id = ?", reorder.SongId).
+				Update("order", reorder.Order).Error; err != nil {
+				return fmt.Errorf("favorites repository: reorder failed for song %s: %w", reorder.SongId, err)
+			}
 		}
-		caseStmt += " END"
-
-		query := fmt.Sprintf("UPDATE favorite_songs SET \"order\" = %s WHERE id IN ?", caseStmt)
-		params = append(params, ids)
-
-		if err := tx.Exec(query, params...).Error; err != nil {
-			return fmt.Errorf("favorites repository: bulk reorder failed: %w", err)
-		}
-
 		return nil
 	})
 }

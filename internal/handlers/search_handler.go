@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
+	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -22,11 +23,19 @@ func (sh *SearchHandler) Search(c fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "query parameter 'q' is required"})
 	}
 
+	if err := utils.ValidateQuery(query); err != nil {
+		return HandleError(c, err)
+	}
+
 	page := 1
 	if pageParam := c.Query("page"); pageParam != "" {
-		if p, err := strconv.Atoi(pageParam); err == nil && p > 0 {
+		if p, err := strconv.Atoi(pageParam); err == nil {
 			page = p
 		}
+	}
+
+	if err := utils.ValidatePage(page); err != nil {
+		return HandleError(c, err)
 	}
 
 	response, err := sh.searchService.Search(c.Context(), query, page)
