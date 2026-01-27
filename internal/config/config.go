@@ -140,10 +140,8 @@ func parseIntEnv(key string, defaultValue int) int {
 	if value == "" {
 		return defaultValue
 	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		utils.GetLogger().Warn("Invalid environment variable, using default", "key", key, "default", defaultValue, "error", err)
-		return defaultValue
+	if parsed, err := strconv.Atoi(value); err == nil {
+		return parsed
 	}
-	return parsed
+	return defaultValue
 }

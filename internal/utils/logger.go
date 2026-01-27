@@ -5,25 +5,16 @@ import (
 	"os"
 )
 
-var defaultLogger *slog.Logger
+var logger *slog.Logger
 
 func init() {
-	// Use JSON logger in production, text logger in development
 	if os.Getenv("ENV") == "production" {
-		defaultLogger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		}))
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	} else {
-		defaultLogger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		}))
+		logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
 	}
 }
 
 func GetLogger() *slog.Logger {
-	return defaultLogger
-}
-
-func SetLogger(logger *slog.Logger) {
-	defaultLogger = logger
+	return logger
 }

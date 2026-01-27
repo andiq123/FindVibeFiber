@@ -42,36 +42,22 @@ func NewServer(
 
 func (s *Server) Initialize() {
 	appConfig := config.LoadConfig()
-	
 	s.app = fiber.New(fiber.Config{
 		ReadTimeout:  appConfig.Server.ReadTimeout,
 		WriteTimeout: appConfig.Server.WriteTimeout,
 		IdleTimeout:  appConfig.Server.IdleTimeout,
 	})
-	
-	s.setupMiddleware()
-	s.setupRoutes()
-}
 
-func (s *Server) setupMiddleware() {
 	s.app.Use(cors.New(middleware.NewCORS()))
 	s.app.Use(recover.New())
-	s.app.Use(compress.New(compress.Config{
-		Level: compress.LevelDefault,
-	}))
+	s.app.Use(compress.New())
 	s.app.Use(middleware.RequestSizeLimit())
-	// Rate limit: 100 requests per minute per IP
-	s.app.Use(middleware.RateLimit(100, time.Minute))
-}
 
-func (s *Server) setupRoutes() {
 	s.app.Get("/health", s.healthHandler.GetHealth)
+	s.app.Use(middleware.RateLimit(100, time.Minute))
 
-	suggestGroup := s.app.Group("/suggest")
-	suggestGroup.Get("/", s.suggestionsHandler.GetSuggestions)
-
-	searchGroup := s.app.Group("/search")
-	searchGroup.Get("/", s.searchHandler.Search)
+	s.app.Get("/suggest", s.suggestionsHandler.GetSuggestions)
+	s.app.Get("/search", s.searchHandler.Search)
 
 	favorites := s.app.Group("/favorites")
 	favorites.Get("/:userId", s.favoritesHandler.GetFavorites)

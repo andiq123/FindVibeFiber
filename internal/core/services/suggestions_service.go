@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-
-	"github.com/andiq123/FindVibeFiber/internal/utils"
 )
 
 type SuggestionsService struct {
@@ -18,12 +16,7 @@ type SuggestionsService struct {
 }
 
 func NewSuggestionsService(client *http.Client) *SuggestionsService {
-	if client == nil {
-		client = utils.GetHTTPClient()
-	}
-	return &SuggestionsService{
-		client: client,
-	}
+	return &SuggestionsService{client: client}
 }
 
 func (ss *SuggestionsService) GetSuggestions(ctx context.Context, query string) ([]string, error) {

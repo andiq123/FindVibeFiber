@@ -24,7 +24,7 @@ func InitializeHandlers(db *gorm.DB) (*handlers.HealthHandler, *handlers.AuthHan
 	favoritesHandler := handlers.NewFavoritesHandler(favoritesService)
 
 	appConfig := config.LoadConfig()
-	httpClient := utils.GetHTTPClientWithConfig(
+	httpClient := utils.NewHTTPClient(
 		appConfig.HTTP.Timeout,
 		appConfig.HTTP.MaxIdleConns,
 		appConfig.HTTP.MaxIdlePerHost,

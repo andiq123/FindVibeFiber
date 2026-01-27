@@ -23,7 +23,7 @@ func (as *AuthService) AuthenticateUser(ctx context.Context, username string) (*
 	username = strings.ToLower(strings.TrimSpace(username))
 	user, err := as.authRepository.AuthenticateUser(ctx, username)
 	if err != nil {
-		return nil, fmt.Errorf("auth service: %w", err)
+		return nil, fmt.Errorf("authenticate user: %w", err)
 	}
 	return user, nil
 }
