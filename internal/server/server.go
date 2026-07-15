@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/config"
@@ -39,13 +40,16 @@ func NewServer(cfg config.ServerConfig, h di.Handlers) *Server {
 	app.Use(limiter.New(limiter.Config{
 		Max:        100,
 		Expiration: time.Minute,
-		Next:       func(c fiber.Ctx) bool { return c.Path() == "/health" },
+		Next: func(c fiber.Ctx) bool {
+			return c.Path() == "/health" || strings.HasPrefix(c.Path(), "/health/")
+		},
 		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "too many requests"})
 		},
 	}))
 
 	app.Get("/health", h.Health.GetHealth)
+	app.Get("/health/sources", h.Health.GetSources)
 	app.Get("/suggest", h.Suggestions.GetSuggestions)
 	app.Get("/search", h.Search.Search)
 

@@ -16,6 +16,7 @@ type PaginationInfo struct {
 }
 
 func NewProviderResult(song Song, provider string, rank int, pagination *PaginationInfo) ProviderResult {
+	song.Provider = provider
 	return ProviderResult{
 		Song:         song,
 		Provider:     provider,

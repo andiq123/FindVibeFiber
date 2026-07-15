@@ -35,7 +35,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 	searchConfig.MaxResults = cfg.Search.MaxResults
 
 	return Handlers{
-		Health:      handlers.NewHealthHandler(),
+		Health:      handlers.NewHealthHandler(httpClient),
 		Auth:        handlers.NewAuthHandler(services.NewAuthService(authRepository)),
 		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
