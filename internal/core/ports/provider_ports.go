@@ -9,5 +9,6 @@ import (
 type IMusicProvider interface {
 	Name() string
 	Search(ctx context.Context, query string) ([]domain.ProviderResult, error)
+	SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error)
 	Priority() int
 }

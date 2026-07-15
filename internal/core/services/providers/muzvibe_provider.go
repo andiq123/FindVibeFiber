@@ -14,6 +14,8 @@ import (
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 )
 
+var totalResultsRegex = regexp.MustCompile(`найдено\s+(\d+)\s+песен`)
+
 type MuzVibeProvider struct {
 	*BaseProvider
 	sourceURL string
@@ -121,7 +123,6 @@ func (mvp *MuzVibeProvider) extractPaginationInfo(doc *goquery.Document, current
 	}
 
 	h1Text := doc.Find(".h1 h1").Text()
-	totalResultsRegex := regexp.MustCompile(`найдено\s+(\d+)\s+песен`)
 	if matches := totalResultsRegex.FindStringSubmatch(h1Text); len(matches) > 1 {
 		if total, err := strconv.Atoi(matches[1]); err == nil {
 			info.TotalResults = total

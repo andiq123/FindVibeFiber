@@ -1,8 +1,6 @@
 package database
 
 import (
-	"log"
-
 	"github.com/andiq123/FindVibeFiber/internal/config"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"gorm.io/driver/postgres"
@@ -10,25 +8,19 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func InitDb() *gorm.DB {
-	var db *gorm.DB
-	var err error
-
-	dbConfig := config.LoadDatabaseConfig()
-	dsn := dbConfig.DSN()
-
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+func InitDb(dbConfig config.DatabaseConfig) *gorm.DB {
+	db, err := gorm.Open(postgres.Open(dbConfig.DSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
 		utils.GetLogger().Error("Failed to connect to PostgreSQL", "error", err)
-		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+		panic(err)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
 		utils.GetLogger().Error("Failed to get database connection", "error", err)
-		log.Fatalf("Failed to get database connection: %v", err)
+		panic(err)
 	}
 
 	sqlDB.SetMaxOpenConns(dbConfig.MaxOpenConns)
@@ -36,24 +28,21 @@ func InitDb() *gorm.DB {
 	sqlDB.SetConnMaxLifetime(dbConfig.ConnMaxLifetime)
 	sqlDB.SetConnMaxIdleTime(dbConfig.ConnMaxIdleTime)
 
-	utils.GetLogger().Info("PostgreSQL database connected successfully",
+	utils.GetLogger().Info("PostgreSQL connected",
 		"maxOpenConns", dbConfig.MaxOpenConns,
 		"maxIdleConns", dbConfig.MaxIdleConns)
 
-	runMigrations(db)
-
+	migrate(db)
 	return db
 }
 
-func runMigrations(db *gorm.DB) {
-	migrations := []string{
-		`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`,
-		`CREATE EXTENSION IF NOT EXISTS "pg_stat_statements"`,
+func migrate(db *gorm.DB) {
+	// ponytail: inline DDL, no migrate framework; UUIDs come from Go, no uuid-ossp
+	for _, sql := range []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id VARCHAR(255) PRIMARY KEY,
 			name VARCHAR(255) NOT NULL UNIQUE
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name ON users(name)`,
 		`CREATE TABLE IF NOT EXISTS favorite_songs (
 			id VARCHAR(255) PRIMARY KEY,
 			title VARCHAR(500) NOT NULL,
@@ -87,28 +76,22 @@ func runMigrations(db *gorm.DB) {
 					EXECUTE FUNCTION update_updated_at_column();
 			END IF;
 		END $$`,
-	}
-
-	for _, migration := range migrations {
-		if err := db.Exec(migration).Error; err != nil {
+	} {
+		if err := db.Exec(sql).Error; err != nil {
 			utils.GetLogger().Warn("Migration warning", "error", err)
 		}
 	}
-
-	utils.GetLogger().Info("Database migrations completed")
 }
 
 func CloseDb(db *gorm.DB) {
 	sqlDB, err := db.DB()
 	if err != nil {
 		utils.GetLogger().Error("Failed to get database connection for close", "error", err)
-		log.Fatalf("Failed to get database connection: %v", err)
+		return
 	}
-
 	if err := sqlDB.Close(); err != nil {
 		utils.GetLogger().Error("Failed to close database connection", "error", err)
-		log.Fatalf("Failed to close database connection: %v", err)
+		return
 	}
-
 	utils.GetLogger().Info("Database connection closed")
 }

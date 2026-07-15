@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 
+	"github.com/andiq123/FindVibeFiber/internal/config"
 	"github.com/andiq123/FindVibeFiber/internal/database"
 	"github.com/andiq123/FindVibeFiber/internal/di"
 	"github.com/andiq123/FindVibeFiber/internal/server"
@@ -16,12 +17,10 @@ func init() {
 }
 
 func main() {
-	db := database.InitDb()
+	cfg := config.LoadConfig()
+	db := database.InitDb(cfg.Database)
 	defer database.CloseDb(db)
 
-	healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler := di.InitializeHandlers(db)
-
-	srv := server.NewServer(healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler)
-	srv.Initialize()
+	srv := server.NewServer(cfg.Server, di.InitializeHandlers(db, cfg))
 	srv.Start()
 }

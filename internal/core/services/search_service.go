@@ -78,24 +78,13 @@ func (ss *SearchService) searchParallel(ctx context.Context, query string, page 
 		wg.Add(1)
 		go func(p ports.IMusicProvider) {
 			defer wg.Done()
-
-			var results []domain.ProviderResult
-			var err error
-
-			if paginatedProvider, ok := p.(interface {
-				SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error)
-			}); ok {
-				results, err = paginatedProvider.SearchWithPage(timeoutCtx, query, page)
-			} else {
-				results, err = p.Search(timeoutCtx, query)
+			results, err := p.SearchWithPage(timeoutCtx, query, page)
+			if err != nil || len(results) == 0 {
+				return
 			}
-
-			if err == nil && len(results) > 0 {
-				select {
-				case resultsChan <- results:
-				case <-timeoutCtx.Done():
-					return
-				}
+			select {
+			case resultsChan <- results:
+			case <-timeoutCtx.Done():
 			}
 		}(provider)
 	}

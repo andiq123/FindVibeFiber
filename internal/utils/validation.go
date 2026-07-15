@@ -31,11 +31,7 @@ func ValidateQuery(query string) error {
 }
 
 func ValidatePage(page int) error {
-	if page < 1 {
-		return domain.ErrInvalidInput
-	}
-	// Max page is loaded from config, but we use constant as fallback
-	if page > 1000 { // Reasonable upper limit
+	if page < 1 || page > constants.DefaultMaxPageNumber {
 		return domain.ErrInvalidInput
 	}
 	return nil

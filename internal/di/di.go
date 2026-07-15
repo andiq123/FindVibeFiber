@@ -12,33 +12,37 @@ import (
 	"gorm.io/gorm"
 )
 
-func InitializeHandlers(db *gorm.DB) (*handlers.HealthHandler, *handlers.AuthHandler, *handlers.FavoritesHandler, *handlers.SuggestionsHandler, *handlers.SearchHandler) {
-	healthHandler := handlers.NewHealthHandler()
+type Handlers struct {
+	Health      *handlers.HealthHandler
+	Auth        *handlers.AuthHandler
+	Favorites   *handlers.FavoritesHandler
+	Suggestions *handlers.SuggestionsHandler
+	Search      *handlers.SearchHandler
+}
 
+func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 	authRepository := repository.NewAuthRepository(db)
-	authService := services.NewAuthService(authRepository)
-	authHandler := handlers.NewAuthHandler(authService)
-
 	favoritesRepository := repository.NewFavoritesRepository(db)
-	favoritesService := services.NewFavoritesService(favoritesRepository, authRepository)
-	favoritesHandler := handlers.NewFavoritesHandler(favoritesService)
 
-	appConfig := config.LoadConfig()
 	httpClient := utils.NewHTTPClient(
-		appConfig.HTTP.Timeout,
-		appConfig.HTTP.MaxIdleConns,
-		appConfig.HTTP.MaxIdlePerHost,
-		appConfig.HTTP.IdleTimeout,
+		cfg.HTTP.Timeout,
+		cfg.HTTP.MaxIdleConns,
+		cfg.HTTP.MaxIdlePerHost,
+		cfg.HTTP.IdleTimeout,
 	)
-	suggestionsService := services.NewSuggestionsService(httpClient)
-	suggestionsHandler := handlers.NewSuggestionsHandler(suggestionsService)
-	musicProviders := []ports.IMusicProvider{
-		providers.NewMuzVibeProvider(httpClient),
-	}
-	searchConfig := domain.DefaultSearchConfig()
-	searchConfig.MaxResults = appConfig.Search.MaxResults
-	searchService := services.NewSearchService(musicProviders, searchConfig, appConfig.Search.Timeout)
-	searchHandler := handlers.NewSearchHandler(searchService)
 
-	return healthHandler, authHandler, favoritesHandler, suggestionsHandler, searchHandler
+	searchConfig := domain.DefaultSearchConfig()
+	searchConfig.MaxResults = cfg.Search.MaxResults
+
+	return Handlers{
+		Health:      handlers.NewHealthHandler(),
+		Auth:        handlers.NewAuthHandler(services.NewAuthService(authRepository)),
+		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
+		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
+		Search: handlers.NewSearchHandler(services.NewSearchService(
+			[]ports.IMusicProvider{providers.NewMuzVibeProvider(httpClient)},
+			searchConfig,
+			cfg.Search.Timeout,
+		)),
+	}
 }
