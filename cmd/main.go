@@ -7,6 +7,7 @@ import (
 	"github.com/andiq123/FindVibeFiber/internal/database"
 	"github.com/andiq123/FindVibeFiber/internal/di"
 	"github.com/andiq123/FindVibeFiber/internal/server"
+	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/joho/godotenv"
 )
 
@@ -18,9 +19,14 @@ func init() {
 
 func main() {
 	cfg := config.LoadConfig()
-	db := database.InitDb(cfg.Database)
-	defer database.CloseDb(db)
+	srv := server.NewServer(cfg.Server)
 
-	srv := server.NewServer(cfg.Server, di.InitializeHandlers(db, cfg))
+	// Listen first so Render /health stops 504'ing during DB connect.
+	go func() {
+		db := database.InitDb(cfg.Database)
+		srv.Mount(di.InitializeHandlers(db, cfg))
+	}()
+
+	utils.GetLogger().Info("Booting HTTP before database")
 	srv.Start()
 }

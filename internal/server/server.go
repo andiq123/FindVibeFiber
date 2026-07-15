@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/config"
@@ -20,9 +21,12 @@ import (
 type Server struct {
 	app *fiber.App
 	cfg config.ServerConfig
+	h   atomic.Pointer[di.Handlers]
 }
 
-func NewServer(cfg config.ServerConfig, h di.Handlers) *Server {
+// NewServer listens with /health immediately; call Mount after DB is ready.
+func NewServer(cfg config.ServerConfig) *Server {
+	s := &Server{cfg: cfg}
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
@@ -48,20 +52,55 @@ func NewServer(cfg config.ServerConfig, h di.Handlers) *Server {
 		},
 	}))
 
-	app.Get("/health", h.Health.GetHealth)
-	app.Get("/health/sources", h.Health.GetSources)
-	app.Get("/suggest", h.Suggestions.GetSuggestions)
-	app.Get("/search", h.Search.Search)
+	// Always answer — Render free tier 504s until something listens.
+	app.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON("Pong")
+	})
+	app.Get("/health/sources", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Health.GetSources(c)
+	}))
+	app.Get("/suggest", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Suggestions.GetSuggestions(c)
+	}))
+	app.Get("/search", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Search.Search(c)
+	}))
 
 	favorites := app.Group("/favorites")
-	favorites.Get("/:userId", h.Favorites.GetFavorites)
-	favorites.Post("/:userId", h.Favorites.AddFavorite)
-	favorites.Delete("/:songId", h.Favorites.DeleteFavorite)
-	favorites.Put("/", h.Favorites.ReorderFavorites)
+	favorites.Get("/:userId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Favorites.GetFavorites(c)
+	}))
+	favorites.Post("/:userId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Favorites.AddFavorite(c)
+	}))
+	favorites.Delete("/:songId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Favorites.DeleteFavorite(c)
+	}))
+	favorites.Put("/", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Favorites.ReorderFavorites(c)
+	}))
 
-	app.Get("/:username", h.Auth.AuthenticateUser)
+	app.Get("/:username", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Auth.AuthenticateUser(c)
+	}))
 
-	return &Server{app: app, cfg: cfg}
+	s.app = app
+	return s
+}
+
+func (s *Server) Mount(h di.Handlers) {
+	s.h.Store(&h)
+	utils.GetLogger().Info("API handlers mounted")
+}
+
+func (s *Server) withHandlers(fn func(*di.Handlers, fiber.Ctx) error) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		h := s.h.Load()
+		if h == nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "starting"})
+		}
+		return fn(h, c)
+	}
 }
 
 func (s *Server) Start() {
