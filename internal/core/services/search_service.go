@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
@@ -12,9 +11,9 @@ import (
 )
 
 type SearchService struct {
-	providers   []ports.IMusicProvider
-	ranker      *SearchRanker
-	config      *domain.SearchConfig
+	providers     []ports.IMusicProvider
+	ranker        *SearchRanker
+	config        *domain.SearchConfig
 	searchTimeout time.Duration
 }
 
@@ -39,7 +38,18 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
 
-	allResults := ss.searchParallel(ctx, query, page)
+	timeoutCtx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
+	defer cancel()
+
+	// ponytail: one provider today — sequential call; fan-out when N>=2
+	allResults := make([]domain.ProviderResult, 0, 40)
+	for _, p := range ss.providers {
+		results, err := p.SearchWithPage(timeoutCtx, query, page)
+		if err != nil || len(results) == 0 {
+			continue
+		}
+		allResults = append(allResults, results...)
+	}
 
 	if len(allResults) == 0 {
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
@@ -65,52 +75,6 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	}
 
 	return domain.NewSearchResponse(songs, pagination), nil
-}
-
-func (ss *SearchService) searchParallel(ctx context.Context, query string, page int) []domain.ProviderResult {
-	timeoutCtx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
-	defer cancel()
-
-	resultsChan := make(chan []domain.ProviderResult, len(ss.providers))
-	var wg sync.WaitGroup
-
-	for _, provider := range ss.providers {
-		wg.Add(1)
-		go func(p ports.IMusicProvider) {
-			defer wg.Done()
-			results, err := p.SearchWithPage(timeoutCtx, query, page)
-			if err != nil || len(results) == 0 {
-				return
-			}
-			select {
-			case resultsChan <- results:
-			case <-timeoutCtx.Done():
-			}
-		}(provider)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultsChan)
-	}()
-
-	estimatedCapacity := len(ss.providers) * 40
-	if ss.config.MaxResults > 0 && estimatedCapacity > ss.config.MaxResults*2 {
-		estimatedCapacity = ss.config.MaxResults * 2
-	}
-	allResults := make([]domain.ProviderResult, 0, estimatedCapacity)
-
-	for {
-		select {
-		case results, ok := <-resultsChan:
-			if !ok {
-				return allResults
-			}
-			allResults = append(allResults, results...)
-		case <-timeoutCtx.Done():
-			return allResults
-		}
-	}
 }
 
 func (ss *SearchService) deduplicateResults(results []domain.ProviderResult) []domain.ProviderResult {

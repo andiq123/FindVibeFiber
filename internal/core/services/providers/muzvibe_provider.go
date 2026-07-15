@@ -52,7 +52,7 @@ func (mvp *MuzVibeProvider) SearchWithPage(ctx context.Context, query string, pa
 		return nil, fmt.Errorf("muzvibe: unexpected status code: %d", resp.StatusCode)
 	}
 
-	return mvp.parseResults(resp.Body, query, page)
+	return mvp.parseResults(resp.Body, page)
 }
 
 func (mvp *MuzVibeProvider) createSearchRequest(ctx context.Context, query string, page int) (*http.Request, error) {
@@ -70,8 +70,8 @@ func (mvp *MuzVibeProvider) createSearchRequest(ctx context.Context, query strin
 	return req, nil
 }
 
-func (mvp *MuzVibeProvider) parseResults(body io.Reader, query string, currentPage int) ([]domain.ProviderResult, error) {
-	doc, err := goquery.NewDocumentFromReader(body)
+func (mvp *MuzVibeProvider) parseResults(body io.Reader, currentPage int) ([]domain.ProviderResult, error) {
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("muzvibe: failed to parse HTML: %w", err)
 	}
@@ -98,12 +98,10 @@ func (mvp *MuzVibeProvider) parseResults(body io.Reader, query string, currentPa
 		}
 
 		song := domain.NewSong(title, artist, image, link)
-		matchScore := mvp.CalculateBasicMatchScore(*song, query)
-
 		results = append(results, *domain.NewProviderResultWithPagination(
 			*song,
 			mvp.Name(),
-			matchScore,
+			0,
 			rank,
 			paginationInfo,
 		))

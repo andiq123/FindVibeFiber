@@ -2,7 +2,7 @@ package constants
 
 const (
 	// HTTP Client Configuration
-	DefaultHTTPTimeout        = 30 // seconds
+	DefaultHTTPTimeout        = 5 // seconds — keep near SEARCH_TIMEOUT_SEC
 	DefaultHTTPMaxIdleConns   = 100
 	DefaultHTTPMaxIdlePerHost = 10
 	DefaultHTTPIdleTimeout    = 90 // seconds

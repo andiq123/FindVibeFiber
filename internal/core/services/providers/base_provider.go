@@ -2,11 +2,6 @@ package providers
 
 import (
 	"net/http"
-	"slices"
-	"strings"
-
-	"github.com/andiq123/FindVibeFiber/internal/core/domain"
-	"github.com/andiq123/FindVibeFiber/internal/utils"
 )
 
 type BaseProvider struct {
@@ -33,44 +28,6 @@ func (bp *BaseProvider) Priority() int {
 
 func (bp *BaseProvider) GetClient() *http.Client {
 	return bp.client
-}
-
-func (bp *BaseProvider) CalculateBasicMatchScore(song domain.Song, query string) float64 {
-	normalizedQuery := utils.NormalizeString(query)
-	normalizedTitle := utils.NormalizeString(song.Title)
-	normalizedArtist := utils.NormalizeString(song.Artist)
-
-	if normalizedTitle == normalizedQuery {
-		return 1.0
-	}
-
-	if normalizedArtist == normalizedQuery {
-		return 0.9
-	}
-
-	titleContains := strings.Contains(normalizedTitle, normalizedQuery)
-	if titleContains {
-		return 0.8
-	}
-
-	if strings.Contains(normalizedArtist, normalizedQuery) {
-		return 0.7
-	}
-
-	queryWords := strings.Fields(normalizedQuery)
-	if len(queryWords) == 0 {
-		return 0.5
-	}
-
-	titleWords := strings.Fields(normalizedTitle)
-	matches := 0
-	for _, qw := range queryWords {
-		if slices.Contains(titleWords, qw) {
-			matches++
-		}
-	}
-
-	return float64(matches) / float64(len(queryWords)) * 0.6
 }
 
 func (bp *BaseProvider) AddBrowserHeaders(req *http.Request, referer string) {

@@ -136,6 +136,7 @@ func (rr *SearchRanker) calculateMatchScoreOptimized(normalizedTitle, normalized
 	titleMatchRatio := float64(titleMatchCount) / float64(totalWords)
 	artistMatchRatio := float64(artistMatchCount) / float64(totalWords)
 
+	// ponytail: word/substring only — Levenshtein was O(n²) per result for little gain
 	wordMatchScore := (titleMatchRatio * 0.7) + (artistMatchRatio * 0.3)
 
 	substringBonus := 0.0
@@ -145,26 +146,12 @@ func (rr *SearchRanker) calculateMatchScoreOptimized(normalizedTitle, normalized
 		substringBonus = 0.10
 	}
 
-	titleSimilarity := calculateSimilarity(normalizedQuery, normalizedTitle)
-	artistSimilarity := calculateSimilarity(normalizedQuery, normalizedArtist)
-	combinedSimilarity := calculateSimilarity(normalizedQuery, combinedStr)
-
-	fuzzyScore := math.Max(
-		math.Max(titleSimilarity*0.85, artistSimilarity*0.75),
-		combinedSimilarity*0.80,
-	)
-
 	partialMatchScore := 0.0
 	if titleMatchCount > 0 || artistMatchCount > 0 {
 		partialMatchScore = wordMatchScore * 0.85
 	}
 
-	finalScore := math.Max(
-		math.Max(partialMatchScore, fuzzyScore),
-		wordMatchScore+substringBonus,
-	)
-
-	return math.Min(finalScore, 0.91)
+	return math.Min(math.Max(partialMatchScore, wordMatchScore+substringBonus), 0.91)
 }
 
 func (rr *SearchRanker) calculatePositionScore(position int) float64 {
@@ -240,73 +227,4 @@ func countMatchingWords(queryWords, targetWords []string) int {
 		}
 	}
 	return count
-}
-
-func calculateSimilarity(s1, s2 string) float64 {
-	distance := levenshteinDistance(s1, s2)
-	maxLen := math.Max(float64(len(s1)), float64(len(s2)))
-
-	if maxLen == 0 {
-		return 1.0
-	}
-
-	return 1.0 - (float64(distance) / maxLen)
-}
-
-func levenshteinDistance(s1, s2 string) int {
-	len1 := len(s1)
-	len2 := len(s2)
-
-	if len1 == 0 {
-		return len2
-	}
-	if len2 == 0 {
-		return len1
-	}
-
-	if len1 > len2 {
-		s1, s2 = s2, s1
-		len1, len2 = len2, len1
-	}
-
-	prevRow := make([]int, len1+1)
-	currRow := make([]int, len1+1)
-
-	for i := range prevRow {
-		prevRow[i] = i
-	}
-
-	for j := 1; j <= len2; j++ {
-		currRow[0] = j
-
-		for i := 1; i <= len1; i++ {
-			cost := 1
-			if s1[i-1] == s2[j-1] {
-				cost = 0
-			}
-
-			currRow[i] = min(
-				prevRow[i]+1,
-				currRow[i-1]+1,
-				prevRow[i-1]+cost,
-			)
-		}
-
-		prevRow, currRow = currRow, prevRow
-	}
-
-	return prevRow[len1]
-}
-
-func min(a, b, c int) int {
-	if a < b {
-		if a < c {
-			return a
-		}
-		return c
-	}
-	if b < c {
-		return b
-	}
-	return c
 }

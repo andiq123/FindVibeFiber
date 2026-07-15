@@ -10,11 +10,12 @@ func NewHTTPClient(timeout time.Duration, maxIdleConns, maxIdlePerHost int, idle
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
-			MaxIdleConns:        maxIdleConns,
-			MaxIdleConnsPerHost: maxIdlePerHost,
-			IdleConnTimeout:     idleTimeout,
-			ForceAttemptHTTP2:   true,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+			MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   maxIdlePerHost,
+			IdleConnTimeout:       idleTimeout,
+			ResponseHeaderTimeout: 2 * time.Second,
+			ForceAttemptHTTP2:     true,
 		},
 	}
 }
