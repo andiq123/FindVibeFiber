@@ -16,15 +16,6 @@ type PaginationInfo struct {
 	TotalPages   int  `json:"totalPages"`
 }
 
-func NewProviderResult(song Song, provider string, matchScore float64, rank int) *ProviderResult {
-	return &ProviderResult{
-		Song:         song,
-		Provider:     provider,
-		MatchScore:   matchScore,
-		ProviderRank: rank,
-	}
-}
-
 func NewProviderResultWithPagination(song Song, provider string, matchScore float64, rank int, pagination *PaginationInfo) *ProviderResult {
 	return &ProviderResult{
 		Song:         song,

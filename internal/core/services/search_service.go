@@ -45,7 +45,12 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	allResults := make([]domain.ProviderResult, 0, 40)
 	for _, p := range ss.providers {
 		results, err := p.SearchWithPage(timeoutCtx, query, page)
-		if err != nil || len(results) == 0 {
+		if err != nil {
+			utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", query, "error", err)
+			continue
+		}
+		if len(results) == 0 {
+			utils.GetLogger().Warn("provider returned no results", "provider", p.Name(), "query", query)
 			continue
 		}
 		allResults = append(allResults, results...)

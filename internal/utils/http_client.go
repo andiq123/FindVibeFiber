@@ -14,7 +14,7 @@ func NewHTTPClient(timeout time.Duration, maxIdleConns, maxIdlePerHost int, idle
 			MaxIdleConns:          maxIdleConns,
 			MaxIdleConnsPerHost:   maxIdlePerHost,
 			IdleConnTimeout:       idleTimeout,
-			ResponseHeaderTimeout: 2 * time.Second,
+			ResponseHeaderTimeout: 8 * time.Second,
 			ForceAttemptHTTP2:     true,
 		},
 	}

@@ -40,7 +40,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
 		Search: handlers.NewSearchHandler(services.NewSearchService(
-			[]ports.IMusicProvider{providers.NewMuzVibeProvider(httpClient)},
+			[]ports.IMusicProvider{providers.NewMuzJamProvider(httpClient)},
 			searchConfig,
 			cfg.Search.Timeout,
 		)),

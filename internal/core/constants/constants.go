@@ -2,7 +2,7 @@ package constants
 
 const (
 	// HTTP Client Configuration
-	DefaultHTTPTimeout        = 5 // seconds — keep near SEARCH_TIMEOUT_SEC
+	DefaultHTTPTimeout        = 12 // seconds — scrape + redirect from Render needs headroom
 	DefaultHTTPMaxIdleConns   = 100
 	DefaultHTTPMaxIdlePerHost = 10
 	DefaultHTTPIdleTimeout    = 90 // seconds
@@ -15,7 +15,7 @@ const (
 	DefaultDBConnMaxIdleTime   = 10 // minutes
 
 	// Search Service Configuration
-	DefaultSearchTimeout   = 3  // seconds
+	DefaultSearchTimeout   = 8 // seconds
 	DefaultMaxSearchResults = 20
 	DefaultMaxPageNumber    = 100
 	MaxQueryLength          = 200
