@@ -3,7 +3,6 @@ package domain
 type ProviderResult struct {
 	Song         Song
 	Provider     string
-	MatchScore   float64
 	ProviderRank int
 	Pagination   *PaginationInfo
 }
@@ -16,11 +15,10 @@ type PaginationInfo struct {
 	TotalPages   int  `json:"totalPages"`
 }
 
-func NewProviderResultWithPagination(song Song, provider string, matchScore float64, rank int, pagination *PaginationInfo) *ProviderResult {
-	return &ProviderResult{
+func NewProviderResult(song Song, provider string, rank int, pagination *PaginationInfo) ProviderResult {
+	return ProviderResult{
 		Song:         song,
 		Provider:     provider,
-		MatchScore:   matchScore,
 		ProviderRank: rank,
 		Pagination:   pagination,
 	}

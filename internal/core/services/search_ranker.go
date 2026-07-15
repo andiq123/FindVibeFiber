@@ -1,9 +1,9 @@
 package services
 
 import (
+	"cmp"
 	"math"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
@@ -15,9 +15,7 @@ type SearchRanker struct {
 }
 
 func NewSearchRanker(weights domain.RankingWeights) *SearchRanker {
-	return &SearchRanker{
-		weights: weights,
-	}
+	return &SearchRanker{weights: weights}
 }
 
 type ScoredResult struct {
@@ -25,206 +23,152 @@ type ScoredResult struct {
 	FinalScore float64
 }
 
-type normalizedSong struct {
-	title  string
-	artist string
-}
-
-func (rr *SearchRanker) RankResults(results []domain.ProviderResult, query string, maxProviderPriority int) []ScoredResult {
+func (rr *SearchRanker) RankResults(results []domain.ProviderResult, query string, priorities map[string]int) []ScoredResult {
 	if len(results) == 0 {
-		return []ScoredResult{}
+		return nil
+	}
+
+	q := utils.NormalizeString(query)
+	artistCount := make(map[string]int, len(results))
+	titles := make([]string, len(results))
+	artists := make([]string, len(results))
+	for i := range results {
+		titles[i] = utils.NormalizeString(results[i].Song.Title)
+		artists[i] = utils.NormalizeString(results[i].Song.Artist)
+		artistCount[artists[i]]++
 	}
 
 	scored := make([]ScoredResult, len(results))
-	artistCount := make(map[string]int, len(results)/2)
-	normalizedQuery := utils.NormalizeString(query)
-
-	normalizedSongs := make([]normalizedSong, len(results))
-	for i := range results {
-		normalizedSongs[i].artist = utils.NormalizeString(results[i].Song.Artist)
-		normalizedSongs[i].title = utils.NormalizeString(results[i].Song.Title)
-		artistCount[normalizedSongs[i].artist]++
-	}
-
-	// Calculate provider score once since it's the same for all results
-	providerScore := rr.calculateProviderScore(maxProviderPriority)
-
-	for i, result := range results {
-		matchScore := rr.calculateMatchScoreOptimized(
-			normalizedSongs[i].title,
-			normalizedSongs[i].artist,
-			normalizedQuery,
-		)
-		positionScore := rr.calculatePositionScore(result.ProviderRank)
-		diversityBonus := rr.calculateDiversityBonusOptimized(normalizedSongs[i].artist, artistCount)
-		remixPenalty := rr.calculateRemixPenaltyOptimized(normalizedSongs[i].title, normalizedQuery)
-		metadataBonus := rr.calculateMetadataScore(result.Song)
-
-		finalScore := (providerScore * rr.weights.ProviderPriority) +
-			(matchScore * rr.weights.MatchScore) +
-			(positionScore * rr.weights.Position) +
-			(diversityBonus * rr.weights.Diversity)
-
-		finalScore *= remixPenalty
-		finalScore += metadataBonus
-
-		scored[i] = ScoredResult{
-			Result:     result,
-			FinalScore: finalScore,
+	for i, r := range results {
+		match := matchScore(titles[i], artists[i], q)
+		prio := priorities[r.Provider]
+		if prio <= 0 {
+			prio = 5
 		}
+
+		score := float64(prio)/10*rr.weights.ProviderPriority +
+			match*rr.weights.MatchScore +
+			positionScore(r.ProviderRank)*rr.weights.Position +
+			diversityBonus(artists[i], artistCount)*rr.weights.Diversity
+		score *= remixPenalty(titles[i], q)
+		if r.Song.Image != "" {
+			score += 0.05
+		}
+
+		scored[i] = ScoredResult{Result: r, FinalScore: score}
 	}
 
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].FinalScore > scored[j].FinalScore
+	slices.SortFunc(scored, func(a, b ScoredResult) int {
+		if c := cmp.Compare(b.FinalScore, a.FinalScore); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Result.ProviderRank, b.Result.ProviderRank)
 	})
-
 	return scored
 }
 
-func (rr *SearchRanker) calculateProviderScore(maxPriority int) float64 {
-	if maxPriority == 0 {
+func matchScore(title, artist, query string) float64 {
+	combined := artist + " " + title
+	switch {
+	case combined == query:
 		return 1.0
-	}
-	return float64(maxPriority) / 10.0
-}
-
-func (rr *SearchRanker) calculateMatchScoreOptimized(normalizedTitle, normalizedArtist, normalizedQuery string) float64 {
-	var combined strings.Builder
-	combined.Grow(len(normalizedArtist) + len(normalizedTitle) + 1)
-	combined.WriteString(normalizedArtist)
-	combined.WriteByte(' ')
-	combined.WriteString(normalizedTitle)
-	combinedStr := combined.String()
-
-	if combinedStr == normalizedQuery {
-		return 1.0
-	}
-
-	if normalizedTitle == normalizedQuery {
+	case title == query:
 		return 0.98
-	}
-
-	if normalizedArtist == normalizedQuery {
+	case artist == query:
 		return 0.95
 	}
 
-	queryWords := strings.Fields(normalizedQuery)
-	titleWords := strings.Fields(normalizedTitle)
-	artistWords := strings.Fields(normalizedArtist)
-	combinedWords := strings.Fields(combinedStr)
-
-	if len(queryWords) == 0 {
+	qWords := strings.Fields(query)
+	if len(qWords) == 0 {
 		return 0.5
 	}
-
-	allWordsMatch := true
-	for _, qw := range queryWords {
-		if !slices.Contains(combinedWords, qw) {
-			allWordsMatch = false
-			break
-		}
-	}
-
-	if allWordsMatch {
+	cWords := strings.Fields(combined)
+	if allContained(qWords, cWords) {
 		return 0.92
 	}
 
-	titleMatchCount := countMatchingWords(queryWords, titleWords)
-	artistMatchCount := countMatchingWords(queryWords, artistWords)
-	totalWords := len(queryWords)
+	tRatio := float64(countOverlap(qWords, strings.Fields(title))) / float64(len(qWords))
+	aRatio := float64(countOverlap(qWords, strings.Fields(artist))) / float64(len(qWords))
+	word := tRatio*0.7 + aRatio*0.3
 
-	titleMatchRatio := float64(titleMatchCount) / float64(totalWords)
-	artistMatchRatio := float64(artistMatchCount) / float64(totalWords)
-
-	// ponytail: word/substring only — Levenshtein was O(n²) per result for little gain
-	wordMatchScore := (titleMatchRatio * 0.7) + (artistMatchRatio * 0.3)
-
-	substringBonus := 0.0
-	if strings.Contains(normalizedTitle, normalizedQuery) {
-		substringBonus = 0.15
-	} else if strings.Contains(normalizedArtist, normalizedQuery) {
-		substringBonus = 0.10
+	bonus := 0.0
+	switch {
+	case strings.Contains(title, query):
+		bonus = 0.15
+	case strings.Contains(artist, query):
+		bonus = 0.10
 	}
 
-	partialMatchScore := 0.0
-	if titleMatchCount > 0 || artistMatchCount > 0 {
-		partialMatchScore = wordMatchScore * 0.85
+	partial := 0.0
+	if word > 0 {
+		partial = word * 0.85
 	}
-
-	return math.Min(math.Max(partialMatchScore, wordMatchScore+substringBonus), 0.91)
+	return math.Min(math.Max(partial, word+bonus), 0.91)
 }
 
-func (rr *SearchRanker) calculatePositionScore(position int) float64 {
-	if position <= 0 {
-		position = 1
+func positionScore(rank int) float64 {
+	if rank <= 0 {
+		rank = 1
 	}
-
-	return 1.0 / math.Pow(float64(position), 0.15)
+	return 1 / math.Pow(float64(rank), 0.15)
 }
 
-func (rr *SearchRanker) calculateDiversityBonusOptimized(normalizedArtist string, artistCount map[string]int) float64 {
-	count := artistCount[normalizedArtist]
-
-	if count <= 1 {
-		return 1.0
+func diversityBonus(artist string, counts map[string]int) float64 {
+	n := counts[artist]
+	if n <= 1 {
+		return 1
 	}
-
-	return 1.0 / (1.0 + math.Log(float64(count)))
+	return 1 / (1 + math.Log(float64(n)))
 }
 
-func (rr *SearchRanker) calculateRemixPenaltyOptimized(normalizedTitle, normalizedQuery string) float64 {
-	heavyPenaltyKeywords := []string{"remix", "bootleg", "mashup", "rework"}
-	mediumPenaltyKeywords := []string{"cover", "instrumental", "karaoke"}
-	lightPenaltyKeywords := []string{"live", "acoustic", "edit", "version", "extended", "remaster", "dub"}
+var (
+	remixHeavy  = []string{"remix", "bootleg", "mashup", "rework"}
+	remixMedium = []string{"cover", "instrumental", "karaoke"}
+	remixLight  = []string{"live", "acoustic", "edit", "version", "extended", "remaster", "dub"}
+)
 
-	// Helper to check if any word in words matches any keyword in keywords
-	containsKeyword := func(words []string, keywords []string) bool {
-		for _, word := range words {
-			if slices.Contains(keywords, word) {
-				return true
-			}
-		}
-		return false
+func remixPenalty(title, query string) float64 {
+	qWords, tWords := strings.Fields(query), strings.Fields(title)
+	if hasAny(qWords, remixHeavy) || hasAny(qWords, remixMedium) || hasAny(qWords, remixLight) ||
+		strings.Contains(query, "radio edit") {
+		return 1
 	}
-
-	queryWords := strings.Fields(normalizedQuery)
-	titleWords := strings.Fields(normalizedTitle)
-
-	// If query explicitly requests variant, don't penalize
-	if containsKeyword(queryWords, heavyPenaltyKeywords) ||
-		containsKeyword(queryWords, mediumPenaltyKeywords) ||
-		containsKeyword(queryWords, lightPenaltyKeywords) ||
-		strings.Contains(normalizedQuery, "radio edit") {
-		return 1.0
-	}
-
-	// Check title for variant keywords
-	if containsKeyword(titleWords, heavyPenaltyKeywords) {
+	switch {
+	case hasAny(tWords, remixHeavy):
 		return 0.5
-	}
-	if containsKeyword(titleWords, mediumPenaltyKeywords) {
+	case hasAny(tWords, remixMedium):
 		return 0.65
-	}
-	if containsKeyword(titleWords, lightPenaltyKeywords) || strings.Contains(normalizedTitle, "radio edit") {
+	case hasAny(tWords, remixLight) || strings.Contains(title, "radio edit"):
 		return 0.8
+	default:
+		return 1
 	}
-
-	return 1.0
 }
 
-func (rr *SearchRanker) calculateMetadataScore(song domain.Song) float64 {
-	if song.Image != "" {
-		return 0.05
-	}
-	return 0.0
-}
-
-func countMatchingWords(queryWords, targetWords []string) int {
-	count := 0
-	for _, qw := range queryWords {
-		if slices.Contains(targetWords, qw) {
-			count++
+func allContained(needles, haystack []string) bool {
+	for _, n := range needles {
+		if !slices.Contains(haystack, n) {
+			return false
 		}
 	}
-	return count
+	return true
+}
+
+func countOverlap(a, b []string) int {
+	n := 0
+	for _, x := range a {
+		if slices.Contains(b, x) {
+			n++
+		}
+	}
+	return n
+}
+
+func hasAny(words, keywords []string) bool {
+	for _, w := range words {
+		if slices.Contains(keywords, w) {
+			return true
+		}
+	}
+	return false
 }
