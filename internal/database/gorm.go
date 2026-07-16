@@ -58,6 +58,7 @@ func migrate(db *gorm.DB) {
 		`CREATE INDEX IF NOT EXISTS idx_favorite_songs_id_user ON favorite_songs(id, user_uuid)`,
 		`CREATE INDEX IF NOT EXISTS idx_favorite_songs_user_order ON favorite_songs(user_uuid, "order")`,
 		`CREATE INDEX IF NOT EXISTS idx_favorite_songs_created_at ON favorite_songs(created_at)`,
+		`ALTER TABLE favorite_songs ADD COLUMN IF NOT EXISTS lyrics TEXT`,
 		`CREATE OR REPLACE FUNCTION update_updated_at_column()
 		RETURNS TRIGGER AS $$
 		BEGIN

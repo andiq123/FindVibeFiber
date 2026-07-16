@@ -66,3 +66,16 @@ func (fs *FavoritesService) UpdateFavoriteImage(ctx context.Context, songId, ima
 	}
 	return nil
 }
+
+const maxFavoriteLyrics = 64_000
+
+func (fs *FavoritesService) UpdateFavoriteLyrics(ctx context.Context, songId, lyrics string) error {
+	lyrics = strings.TrimSpace(lyrics)
+	if lyrics == "" || len(lyrics) > maxFavoriteLyrics {
+		return domain.ErrInvalidInput
+	}
+	if err := fs.favoritesRepository.UpdateFavoriteLyrics(ctx, songId, lyrics); err != nil {
+		return fmt.Errorf("update favorite lyrics: %w", err)
+	}
+	return nil
+}

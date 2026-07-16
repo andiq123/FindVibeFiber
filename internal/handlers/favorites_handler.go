@@ -99,3 +99,22 @@ func (fh *FavoritesHandler) UpdateFavoriteImage(c fiber.Ctx) error {
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
+
+func (fh *FavoritesHandler) UpdateFavoriteLyrics(c fiber.Ctx) error {
+	songId := c.Params("songId")
+	if err := utils.ValidateSongID(songId); err != nil {
+		return HandleError(c, err)
+	}
+
+	var body struct {
+		Lyrics string `json:"lyrics"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	if err := fh.favoritesService.UpdateFavoriteLyrics(c.Context(), songId, body.Lyrics); err != nil {
+		return HandleError(c, err)
+	}
+	return c.SendStatus(http.StatusNoContent)
+}

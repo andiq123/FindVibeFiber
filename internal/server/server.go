@@ -88,6 +88,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	favorites.Patch("/:songId/image", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Favorites.UpdateFavoriteImage(c)
 	}))
+	favorites.Patch("/:songId/lyrics", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Favorites.UpdateFavoriteLyrics(c)
+	}))
 	favorites.Delete("/:songId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Favorites.DeleteFavorite(c)
 	}))

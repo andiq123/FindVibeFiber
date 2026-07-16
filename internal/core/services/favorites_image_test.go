@@ -15,6 +15,15 @@ func TestUpdateFavoriteImageRejectsBadURL(t *testing.T) {
 	}
 }
 
+func TestUpdateFavoriteLyricsRejectsEmptyOrHuge(t *testing.T) {
+	fs := &FavoritesService{}
+	for _, ly := range []string{"", "   ", string(make([]byte, maxFavoriteLyrics+1))} {
+		if err := fs.UpdateFavoriteLyrics(t.Context(), "id", ly); err != domain.ErrInvalidInput {
+			t.Fatalf("lyrics %q: got %v want ErrInvalidInput", truncate(ly), err)
+		}
+	}
+}
+
 func truncate(s string) string {
 	if len(s) > 32 {
 		return s[:32] + "…"
