@@ -23,7 +23,7 @@ func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchCon
 		config = domain.DefaultSearchConfig()
 	}
 	if timeout <= 0 {
-		timeout = 8 * time.Second
+		timeout = time.Second
 	}
 
 	priorities := make(map[string]int, len(providers))
@@ -66,7 +66,7 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	return domain.NewSearchResponse(songs, pickPagination(scored)), nil
 }
 
-// collect waits for every provider — each gets the full timeout budget in parallel.
+// collect waits for every provider in parallel; each is cancelled after searchTimeout (default 1s).
 func (ss *SearchService) collect(ctx context.Context, query string, page int) []domain.ProviderResult {
 	n := len(ss.providers)
 	ch := make(chan []domain.ProviderResult, n)
@@ -78,6 +78,7 @@ func (ss *SearchService) collect(ctx context.Context, query string, page int) []
 
 			got, err := p.SearchWithPage(pctx, query, page)
 			if err != nil {
+				// timeout / cancel → skip that source; others still merge
 				utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", query, "error", err)
 				ch <- nil
 				return

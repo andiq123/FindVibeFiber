@@ -15,7 +15,7 @@ const (
 	DefaultDBConnMaxIdleTime   = 10 // minutes
 
 	// Search Service Configuration
-	DefaultSearchTimeout   = 8 // seconds
+	DefaultSearchTimeout   = 1 // seconds — drop slow providers, don't stall /search
 	DefaultMaxSearchResults = 20
 	DefaultMaxPageNumber    = 100
 	MaxQueryLength          = 200
