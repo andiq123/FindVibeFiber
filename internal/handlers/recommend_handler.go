@@ -454,6 +454,9 @@ func (h *RecommendHandler) resolve(ctx context.Context, pairs []lastfmPair, seed
 		pairs = pairs[:recommendResolveCap*2]
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	type slot struct {
 		i    int
 		song domain.Song
@@ -475,16 +478,30 @@ func (h *RecommendHandler) resolve(ctx context.Context, pairs []lastfmPair, seed
 	}()
 
 	byIdx := make(map[int]domain.Song, len(pairs))
+	decided := make([]bool, len(pairs))
 	for s := range ch {
+		decided[s.i] = true
 		if s.ok {
 			byIdx[s.i] = s.song
 		}
+		// ponytail: only cut once a prefix is fully decided — keeps Last.fm order.
+		prefix := 0
+		for prefix < len(pairs) && decided[prefix] {
+			prefix++
+		}
+		if out := pickResolved(byIdx, prefix, seed); len(out) >= recommendResolveCap {
+			cancel()
+			return out
+		}
 	}
+	return pickResolved(byIdx, len(pairs), seed)
+}
 
+func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair) []domain.Song {
 	seen := map[string]bool{songKey(seed.artist, seed.title): true}
 	seenArtists := map[string]bool{}
 	out := make([]domain.Song, 0, recommendResolveCap)
-	for i := 0; i < len(pairs) && len(out) < recommendResolveCap; i++ {
+	for i := 0; i < n && len(out) < recommendResolveCap; i++ {
 		song, ok := byIdx[i]
 		if !ok {
 			continue
@@ -495,7 +512,7 @@ func (h *RecommendHandler) resolve(ctx context.Context, pairs []lastfmPair, seed
 		}
 		art := utils.NormalizeString(song.Artist)
 		// Soft diversity: skip second track from same artist while we still have room to fill later.
-		if seenArtists[art] && len(out) < recommendResolveCap-1 && i < len(pairs)-1 {
+		if seenArtists[art] && len(out) < recommendResolveCap-1 && i < n-1 {
 			continue
 		}
 		seen[k] = true

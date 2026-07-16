@@ -65,16 +65,14 @@ type lrclibHit struct {
 }
 
 func (h *LyricsHandler) lookup(ctx context.Context, artist, title string) (text, code string, err error) {
-	text, code, err = h.lookupOnce(ctx, artist, title)
-	if err != nil || text != "" || code == "instrumental" {
-		return text, code, err
-	}
-	// ponytail: scrape tags like [mp3-you.net] poison LRCLIB — strip and try once.
+	// ponytail: dirty tags almost never hit — search clean first, skip a doomed round-trip.
 	ca, ct := cleanLyricsQuery(artist), cleanLyricsQuery(title)
 	if (ca != artist || ct != title) && ca != "" && ct != "" {
-		return h.lookupOnce(ctx, ca, ct)
+		if text, code, err = h.lookupOnce(ctx, ca, ct); err != nil || text != "" || code == "instrumental" {
+			return text, code, err
+		}
 	}
-	return "", "not_found", nil
+	return h.lookupOnce(ctx, artist, title)
 }
 
 func (h *LyricsHandler) lookupOnce(ctx context.Context, artist, title string) (text, code string, err error) {
