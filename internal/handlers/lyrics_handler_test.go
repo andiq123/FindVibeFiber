@@ -30,3 +30,14 @@ func TestAllInstrumental(t *testing.T) {
 		t.Fatal("want false")
 	}
 }
+
+func TestCleanLyricsQueryStripsSiteTags(t *testing.T) {
+	got := cleanLyricsQuery("Irina Rimes [mp3-you.net]")
+	if got != "Irina Rimes" {
+		t.Fatalf("got %q", got)
+	}
+	got = cleanLyricsQuery("S-a întâmplat Cu Noi (Official Audio)")
+	if got != "S-a întâmplat Cu Noi" {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -11,7 +11,11 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-var lrcStamp = regexp.MustCompile(`(?m)^\[[0-9.:]+\]\s?`)
+var (
+	lrcStamp = regexp.MustCompile(`(?m)^\[[0-9.:]+\]\s?`)
+	// [mp3-you.net], (www.foo.com), [Official Audio], etc.
+	metaJunk = regexp.MustCompile(`(?i)[\[\(][^\]\)]*(?:\.[a-z]{2,}|\bwww\b|https?://|\bmp3\b|\blyrics\b|\bofficial\b|\baudio\b|\bhd\b|\bhq\b|\b320\b)[^\]\)]*[\]\)]`)
+)
 
 type LyricsHandler struct {
 	client *http.Client
@@ -61,7 +65,19 @@ type lrclibHit struct {
 }
 
 func (h *LyricsHandler) lookup(ctx context.Context, artist, title string) (text, code string, err error) {
-	// ponytail: /search needs no album/duration — /get does.
+	text, code, err = h.lookupOnce(ctx, artist, title)
+	if err != nil || text != "" || code == "instrumental" {
+		return text, code, err
+	}
+	// ponytail: scrape tags like [mp3-you.net] poison LRCLIB — strip and try once.
+	ca, ct := cleanLyricsQuery(artist), cleanLyricsQuery(title)
+	if (ca != artist || ct != title) && ca != "" && ct != "" {
+		return h.lookupOnce(ctx, ca, ct)
+	}
+	return "", "not_found", nil
+}
+
+func (h *LyricsHandler) lookupOnce(ctx context.Context, artist, title string) (text, code string, err error) {
 	hits, err := h.search(ctx, url.Values{
 		"artist_name": {artist},
 		"track_name":  {title},
@@ -83,6 +99,11 @@ func (h *LyricsHandler) lookup(ctx context.Context, artist, title string) (text,
 		return "", "instrumental", nil
 	}
 	return "", "not_found", nil
+}
+
+func cleanLyricsQuery(s string) string {
+	s = metaJunk.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func allInstrumental(hits []lrclibHit) bool {
