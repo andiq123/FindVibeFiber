@@ -2,7 +2,7 @@ package services
 
 import (
 	"context"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
@@ -23,7 +23,7 @@ func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchCon
 		config = domain.DefaultSearchConfig()
 	}
 	if timeout <= 0 {
-		timeout = 3 * time.Second
+		timeout = 8 * time.Second
 	}
 
 	priorities := make(map[string]int, len(providers))
@@ -45,10 +45,8 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
-	defer cancel()
-
-	results := ss.collect(timeoutCtx, query, page)
+	// ponytail: one /search — fetch every provider, merge, dedupe, rank (no first-wins race).
+	results := ss.collect(ctx, query, page)
 	if len(results) == 0 {
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
@@ -62,40 +60,38 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	}
 
 	songs := make([]domain.Song, n)
-	var pagination *domain.PaginationInfo
 	for i := 0; i < n; i++ {
 		songs[i] = scored[i].Result.Song
-		if pagination == nil {
-			pagination = scored[i].Result.Pagination
-		}
 	}
-	return domain.NewSearchResponse(songs, pagination), nil
+	return domain.NewSearchResponse(songs, pickPagination(scored)), nil
 }
 
+// collect waits for every provider — each gets the full timeout budget in parallel.
 func (ss *SearchService) collect(ctx context.Context, query string, page int) []domain.ProviderResult {
-	var (
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-		out = make([]domain.ProviderResult, 0, 40*len(ss.providers))
-	)
+	n := len(ss.providers)
+	ch := make(chan []domain.ProviderResult, n)
+
 	for _, p := range ss.providers {
-		wg.Add(1)
 		go func(p ports.IMusicProvider) {
-			defer wg.Done()
-			got, err := p.SearchWithPage(ctx, query, page)
+			pctx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
+			defer cancel()
+
+			got, err := p.SearchWithPage(pctx, query, page)
 			if err != nil {
 				utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", query, "error", err)
+				ch <- nil
 				return
 			}
-			if len(got) == 0 {
-				return
-			}
-			mu.Lock()
-			out = append(out, got...)
-			mu.Unlock()
+			ch <- got
 		}(p)
 	}
-	wg.Wait()
+
+	out := make([]domain.ProviderResult, 0, 40*n)
+	for range n {
+		if got := <-ch; len(got) > 0 {
+			out = append(out, got...)
+		}
+	}
 	return out
 }
 
@@ -106,9 +102,7 @@ func dedupe(results []domain.ProviderResult) []domain.ProviderResult {
 	for i := range results {
 		key := utils.NormalizeString(results[i].Song.Title) + "|" + utils.NormalizeString(results[i].Song.Artist)
 		if idx, ok := seen[key]; ok {
-			if prefer(&out[idx], &results[i]) {
-				out[idx] = results[i]
-			}
+			mergeDuplicate(&out[idx], &results[i])
 			continue
 		}
 		seen[key] = len(out)
@@ -117,11 +111,49 @@ func dedupe(results []domain.ProviderResult) []domain.ProviderResult {
 	return out
 }
 
-// prefer keeps the richer duplicate (cover art), else better scrape rank.
-func prefer(existing, candidate *domain.ProviderResult) bool {
-	exImg, newImg := existing.Song.Image != "", candidate.Song.Image != ""
-	if exImg != newImg {
-		return newImg
+// mergeDuplicate combines both sources into one row (cover, best link, combined provider).
+func mergeDuplicate(dst, src *domain.ProviderResult) {
+	if dst.Song.Image == "" && src.Song.Image != "" {
+		dst.Song.Image = src.Song.Image
 	}
-	return candidate.ProviderRank < existing.ProviderRank
+	if src.Song.Link != "" && (dst.Song.Link == "" || betterRank(src.ProviderRank, dst.ProviderRank)) {
+		dst.Song.Link = src.Song.Link
+	}
+	if src.ProviderRank > 0 && (dst.ProviderRank == 0 || src.ProviderRank < dst.ProviderRank) {
+		dst.ProviderRank = src.ProviderRank
+	}
+	if dst.Pagination == nil {
+		dst.Pagination = src.Pagination
+	}
+	mergeProvider(&dst.Provider, src.Provider)
+	mergeProvider(&dst.Song.Provider, src.Provider)
+}
+
+func betterRank(candidate, existing int) bool {
+	return candidate > 0 && (existing == 0 || candidate < existing)
+}
+
+func mergeProvider(dst *string, add string) {
+	if add == "" {
+		return
+	}
+	if *dst == "" {
+		*dst = add
+		return
+	}
+	for _, p := range strings.Split(*dst, "+") {
+		if p == add {
+			return
+		}
+	}
+	*dst += "+" + add
+}
+
+func pickPagination(scored []ScoredResult) *domain.PaginationInfo {
+	for _, s := range scored {
+		if s.Result.Pagination != nil {
+			return s.Result.Pagination
+		}
+	}
+	return nil
 }

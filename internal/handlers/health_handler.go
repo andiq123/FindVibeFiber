@@ -24,6 +24,7 @@ type sourceStatus struct {
 }
 
 var musicSources = []sourceSpec{
+	{Name: "MuzJam", Host: "muzjam.org", URL: "https://muzjam.org/"},
 	{Name: "Mp3mn", Host: "mp3mn.net", URL: "https://mp3mn.net/"},
 }
 

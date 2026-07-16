@@ -54,6 +54,13 @@ func (bp *BaseProvider) fetchDocument(ctx context.Context, rawURL, referer strin
 	return doc, nil
 }
 
+func absoluteURL(raw string) string {
+	if strings.HasPrefix(raw, "//") {
+		return "https:" + raw
+	}
+	return raw
+}
+
 func text(s *goquery.Selection) string {
 	return strings.TrimSpace(s.Text())
 }

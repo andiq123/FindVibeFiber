@@ -43,6 +43,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Cover:       handlers.NewCoverHandler(httpClient),
 		Search: handlers.NewSearchHandler(services.NewSearchService(
 			[]ports.IMusicProvider{
+				providers.NewMuzJamProvider(httpClient),
 				providers.NewMp3mnProvider(httpClient),
 			},
 			searchConfig,
