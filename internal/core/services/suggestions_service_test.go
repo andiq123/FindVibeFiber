@@ -17,3 +17,18 @@ func TestRoSuggestFix(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestLocaleCode(t *testing.T) {
+	cases := []struct{ in, fallback, want string }{
+		{"en-US", "en", "en"},
+		{"RO", "en", "ro"},
+		{"", "en", "en"},
+		{"x", "en", "en"},
+		{"!!", "us", "us"},
+	}
+	for _, c := range cases {
+		if got := localeCode(c.in, c.fallback); got != c.want {
+			t.Fatalf("localeCode(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}

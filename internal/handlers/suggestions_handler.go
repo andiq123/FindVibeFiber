@@ -28,7 +28,11 @@ func (sh *SuggestionsHandler) GetSuggestions(c fiber.Ctx) error {
 		return HandleError(c, err)
 	}
 
-	suggestions, err := sh.suggestionsService.GetSuggestions(c.Context(), query)
+	// Client locale (navigator.language) — not the Render region.
+	hl := c.Query("hl", "en")
+	gl := c.Query("gl", "US")
+
+	suggestions, err := sh.suggestionsService.GetSuggestions(c.Context(), query, hl, gl)
 	if err != nil {
 		return HandleError(c, err)
 	}

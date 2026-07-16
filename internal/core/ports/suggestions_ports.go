@@ -5,5 +5,5 @@ import (
 )
 
 type ISuggestionsService interface {
-	GetSuggestions(ctx context.Context, query string) ([]string, error)
+	GetSuggestions(ctx context.Context, query, hl, gl string) ([]string, error)
 }
