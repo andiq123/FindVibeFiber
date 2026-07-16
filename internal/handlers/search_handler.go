@@ -5,16 +5,18 @@ import (
 	"strconv"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
+	"github.com/andiq123/FindVibeFiber/internal/core/services"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/gofiber/fiber/v3"
 )
 
 type SearchHandler struct {
 	searchService ports.ISearchService
+	covers        *services.CoverService
 }
 
-func NewSearchHandler(searchService ports.ISearchService) *SearchHandler {
-	return &SearchHandler{searchService: searchService}
+func NewSearchHandler(searchService ports.ISearchService, covers *services.CoverService) *SearchHandler {
+	return &SearchHandler{searchService: searchService, covers: covers}
 }
 
 func (sh *SearchHandler) Search(c fiber.Ctx) error {
@@ -47,5 +49,7 @@ func (sh *SearchHandler) Search(c fiber.Ctx) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no songs found"})
 	}
 
+	// ponytail: fill only the HTTP response page — not every resolveOne inside radio/explore
+	sh.covers.FillSongs(c.Context(), response.Songs)
 	return c.JSON(response)
 }

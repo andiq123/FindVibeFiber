@@ -1,22 +1,20 @@
 package handlers
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 
+	"github.com/andiq123/FindVibeFiber/internal/core/services"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/gofiber/fiber/v3"
 )
 
 type CoverHandler struct {
-	client *http.Client
+	covers *services.CoverService
 }
 
-func NewCoverHandler(client *http.Client) *CoverHandler {
-	return &CoverHandler{client: client}
+func NewCoverHandler(covers *services.CoverService) *CoverHandler {
+	return &CoverHandler{covers: covers}
 }
 
 // GET /cover?q=artist+title → {"image":"https://..."} or {"image":""}.
@@ -30,39 +28,5 @@ func (ch *CoverHandler) GetCover(c fiber.Ctx) error {
 	}
 
 	// ponytail: optional fill — empty art beats 500 when Apple flakes
-	return c.JSON(fiber.Map{"image": FetchItunesCover(c.Context(), ch.client, q)})
-}
-
-// FetchItunesCover returns a large artwork URL, or "" on miss/error.
-func FetchItunesCover(ctx context.Context, client *http.Client, q string) string {
-	q = strings.TrimSpace(q)
-	if q == "" || client == nil {
-		return ""
-	}
-	apiURL := "https://itunes.apple.com/search?media=music&entity=song&limit=1&term=" + url.QueryEscape(q)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return ""
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-
-	var data struct {
-		Results []struct {
-			ArtworkURL100 string `json:"artworkUrl100"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return ""
-	}
-	if len(data.Results) == 0 || data.Results[0].ArtworkURL100 == "" {
-		return ""
-	}
-	return strings.Replace(data.Results[0].ArtworkURL100, "100x100", "600x600", 1)
+	return c.JSON(fiber.Map{"image": ch.covers.Lookup(c.Context(), q)})
 }

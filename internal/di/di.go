@@ -39,6 +39,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 	searchConfig := domain.DefaultSearchConfig()
 	searchConfig.MaxResults = cfg.Search.MaxResults
 
+	covers := services.NewCoverService(httpClient)
 	searchSvc := services.NewSearchService(
 		[]ports.IMusicProvider{
 			providers.NewMuzJamProvider(httpClient),
@@ -53,9 +54,9 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Auth:        handlers.NewAuthHandler(services.NewAuthService(authRepository)),
 		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
-		Cover:       handlers.NewCoverHandler(httpClient),
-		Search:      handlers.NewSearchHandler(searchSvc),
-		Recommend:   handlers.NewRecommendHandler(httpClient, os.Getenv("LASTFM_API_KEY"), searchSvc),
+		Cover:       handlers.NewCoverHandler(covers),
+		Search:      handlers.NewSearchHandler(searchSvc, covers),
+		Recommend:   handlers.NewRecommendHandler(httpClient, os.Getenv("LASTFM_API_KEY"), searchSvc, covers),
 		Lyrics:      handlers.NewLyricsHandler(httpClient),
 	}
 }

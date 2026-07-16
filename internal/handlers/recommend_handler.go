@@ -13,6 +13,7 @@ import (
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
+	"github.com/andiq123/FindVibeFiber/internal/core/services"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/gofiber/fiber/v3"
 )
@@ -46,14 +47,15 @@ type RecommendHandler struct {
 	client *http.Client
 	apiKey string
 	search ports.ISearchService
+	covers *services.CoverService
 
 	exploreMu       sync.Mutex
 	exploreSections []ExploreSection
 	exploreAt       time.Time
 }
 
-func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearchService) *RecommendHandler {
-	return &RecommendHandler{client: client, apiKey: apiKey, search: search}
+func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearchService, covers *services.CoverService) *RecommendHandler {
+	return &RecommendHandler{client: client, apiKey: apiKey, search: search, covers: covers}
 }
 
 // GET /explore?refresh=1 → chart shelves (Romania / Worldwide / vibes), server-cached 6h.
@@ -121,7 +123,7 @@ func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, 
 		if len(songs) == 0 {
 			continue
 		}
-		h.fillMissingCovers(ctx, songs)
+		h.covers.FillSongs(ctx, songs)
 		out = append(out, ExploreSection{
 			ID: job.id, Title: job.title, Subtitle: job.subtitle, Songs: songs,
 		})
@@ -130,30 +132,6 @@ func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, 
 		return nil, nil
 	}
 	return out, nil
-}
-
-func (h *RecommendHandler) fillMissingCovers(ctx context.Context, songs []domain.Song) {
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
-	for i := range songs {
-		if strings.TrimSpace(songs[i].Image) != "" {
-			continue
-		}
-		q := strings.TrimSpace(songs[i].Artist + " " + songs[i].Title)
-		if q == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(i int, q string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if img := FetchItunesCover(ctx, h.client, q); img != "" {
-				songs[i].Image = img
-			}
-		}(i, q)
-	}
-	wg.Wait()
 }
 
 func (h *RecommendHandler) exploreSnap() ([]ExploreSection, bool) {
@@ -201,6 +179,7 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 	if len(songs) == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Couldn't build a radio for this track"})
 	}
+	h.covers.FillSongs(c.Context(), songs)
 	return c.JSON(songs)
 }
 
