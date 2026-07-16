@@ -22,6 +22,7 @@ type Handlers struct {
 	Search      *handlers.SearchHandler
 	Cover       *handlers.CoverHandler
 	Recommend   *handlers.RecommendHandler
+	Lyrics      *handlers.LyricsHandler
 }
 
 func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
@@ -55,5 +56,6 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Cover:       handlers.NewCoverHandler(httpClient),
 		Search:      handlers.NewSearchHandler(searchSvc),
 		Recommend:   handlers.NewRecommendHandler(httpClient, os.Getenv("LASTFM_API_KEY"), searchSvc),
+		Lyrics:      handlers.NewLyricsHandler(httpClient),
 	}
 }
