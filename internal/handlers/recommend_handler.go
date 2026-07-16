@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
@@ -18,7 +20,20 @@ import (
 const (
 	recommendResolveCap = 5
 	recommendSearchPeek = 8
+
+	// ponytail: region hard-coded until settings grow a country picker
+	exploreCountry = "Romania"
+	exploreTTL     = 6 * time.Hour
+	exploreCap     = 10
+	exploreFetch   = 16
 )
+
+type ExploreSection struct {
+	ID       string        `json:"id"`
+	Title    string        `json:"title"`
+	Subtitle string        `json:"subtitle"`
+	Songs    []domain.Song `json:"songs"`
+}
 
 var (
 	parenRe = regexp.MustCompile(`\([^)]*\)|\[[^\]]*\]`)
@@ -31,10 +46,132 @@ type RecommendHandler struct {
 	client *http.Client
 	apiKey string
 	search ports.ISearchService
+
+	exploreMu       sync.Mutex
+	exploreSections []ExploreSection
+	exploreAt       time.Time
 }
 
 func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearchService) *RecommendHandler {
 	return &RecommendHandler{client: client, apiKey: apiKey, search: search}
+}
+
+// GET /explore?refresh=1 → chart shelves (Romania / Worldwide / vibes), server-cached 6h.
+func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
+	if h.apiKey == "" {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "LASTFM_API_KEY not set"})
+	}
+	refresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
+	if !refresh {
+		if sections, ok := h.exploreSnap(); ok {
+			return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": true})
+		}
+	}
+
+	sections, err := h.buildExplore(c.Context())
+	if err != nil || len(sections) == 0 {
+		if stale, ok := h.exploreSnap(); ok {
+			return c.JSON(fiber.Map{"country": exploreCountry, "sections": stale, "cached": true})
+		}
+		if err != nil {
+			return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't load charts"})
+		}
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "No playable charts right now"})
+	}
+	// ponytail: don't poison the 6h cache with a half-empty build
+	if len(sections) >= 2 {
+		h.exploreStore(sections)
+	}
+	return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": false})
+}
+
+type exploreJob struct {
+	id, title, subtitle string
+	q                   url.Values
+}
+
+func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, error) {
+	limit := strconv.Itoa(exploreFetch)
+	jobs := []exploreJob{
+		{"romania", "Romania", "Hot this week", url.Values{
+			"method": {"geo.getTopTracks"}, "country": {exploreCountry}, "limit": {limit},
+		}},
+		{"worldwide", "Worldwide", "Global chart", url.Values{
+			"method": {"chart.getTopTracks"}, "limit": {limit},
+		}},
+		{"pop", "Pop", "Trending vibe", url.Values{
+			"method": {"tag.getTopTracks"}, "tag": {"pop"}, "limit": {limit},
+		}},
+		{"electronic", "Electronic", "Trending vibe", url.Values{
+			"method": {"tag.getTopTracks"}, "tag": {"electronic"}, "limit": {limit},
+		}},
+	}
+
+	// ponytail: one shelf at a time — 4× parallel resolve floods providers and returns 1 song.
+	out := make([]ExploreSection, 0, len(jobs))
+	for _, job := range jobs {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		pairs, err := h.lastfmTracks(ctx, job.q, "tracks")
+		if err != nil || len(pairs) == 0 {
+			continue
+		}
+		songs := h.resolveN(ctx, pairs, lastfmPair{}, exploreCap)
+		if len(songs) == 0 {
+			continue
+		}
+		h.fillMissingCovers(ctx, songs)
+		out = append(out, ExploreSection{
+			ID: job.id, Title: job.title, Subtitle: job.subtitle, Songs: songs,
+		})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func (h *RecommendHandler) fillMissingCovers(ctx context.Context, songs []domain.Song) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for i := range songs {
+		if strings.TrimSpace(songs[i].Image) != "" {
+			continue
+		}
+		q := strings.TrimSpace(songs[i].Artist + " " + songs[i].Title)
+		if q == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, q string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if img := FetchItunesCover(ctx, h.client, q); img != "" {
+				songs[i].Image = img
+			}
+		}(i, q)
+	}
+	wg.Wait()
+}
+
+func (h *RecommendHandler) exploreSnap() ([]ExploreSection, bool) {
+	h.exploreMu.Lock()
+	defer h.exploreMu.Unlock()
+	if len(h.exploreSections) == 0 || time.Since(h.exploreAt) > exploreTTL {
+		return nil, false
+	}
+	out := make([]ExploreSection, len(h.exploreSections))
+	copy(out, h.exploreSections)
+	return out, true
+}
+
+func (h *RecommendHandler) exploreStore(sections []ExploreSection) {
+	h.exploreMu.Lock()
+	defer h.exploreMu.Unlock()
+	h.exploreSections = append([]ExploreSection(nil), sections...)
+	h.exploreAt = time.Now()
 }
 
 // GET /recommend?artist=&title= → Song[] (Last.fm similar tracks / artists → unique playable hits).
@@ -450,8 +587,15 @@ func coreTitle(title string) string {
 }
 
 func (h *RecommendHandler) resolve(ctx context.Context, pairs []lastfmPair, seed lastfmPair) []domain.Song {
-	if len(pairs) > recommendResolveCap*2 {
-		pairs = pairs[:recommendResolveCap*2]
+	return h.resolveN(ctx, pairs, seed, recommendResolveCap)
+}
+
+func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, seed lastfmPair, cap int) []domain.Song {
+	if cap < 1 {
+		cap = recommendResolveCap
+	}
+	if len(pairs) > cap*2 {
+		pairs = pairs[:cap*2]
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -489,19 +633,19 @@ func (h *RecommendHandler) resolve(ctx context.Context, pairs []lastfmPair, seed
 		for prefix < len(pairs) && decided[prefix] {
 			prefix++
 		}
-		if out := pickResolved(byIdx, prefix, seed); len(out) >= recommendResolveCap {
+		if out := pickResolved(byIdx, prefix, seed, cap); len(out) >= cap {
 			cancel()
 			return out
 		}
 	}
-	return pickResolved(byIdx, len(pairs), seed)
+	return pickResolved(byIdx, len(pairs), seed, cap)
 }
 
-func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair) []domain.Song {
+func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int) []domain.Song {
 	seen := map[string]bool{songKey(seed.artist, seed.title): true}
 	seenArtists := map[string]bool{}
-	out := make([]domain.Song, 0, recommendResolveCap)
-	for i := 0; i < n && len(out) < recommendResolveCap; i++ {
+	out := make([]domain.Song, 0, cap)
+	for i := 0; i < n && len(out) < cap; i++ {
 		song, ok := byIdx[i]
 		if !ok {
 			continue
@@ -512,7 +656,7 @@ func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair) []domain.So
 		}
 		art := utils.NormalizeString(song.Artist)
 		// Soft diversity: skip second track from same artist while we still have room to fill later.
-		if seenArtists[art] && len(out) < recommendResolveCap-1 && i < n-1 {
+		if seenArtists[art] && len(out) < cap-1 && i < n-1 {
 			continue
 		}
 		seen[k] = true

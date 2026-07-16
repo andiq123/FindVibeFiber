@@ -93,3 +93,18 @@ func TestResolveSkipsSeedAndRemixDupes(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestExploreCacheRoundTrip(t *testing.T) {
+	h := &RecommendHandler{}
+	if _, ok := h.exploreSnap(); ok {
+		t.Fatal("empty cache should miss")
+	}
+	h.exploreStore([]ExploreSection{{
+		ID: "romania", Title: "Romania",
+		Songs: []domain.Song{{Title: "A", Artist: "B", Link: "https://x.mp3"}},
+	}})
+	got, ok := h.exploreSnap()
+	if !ok || len(got) != 1 || got[0].ID != "romania" || len(got[0].Songs) != 1 {
+		t.Fatalf("got %+v ok=%v", got, ok)
+	}
+}

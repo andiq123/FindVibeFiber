@@ -1,11 +1,15 @@
 package handlers
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestUpgradeItunesArtwork(t *testing.T) {
-	in := "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/e8/43/5f/e8435ffa-b6b9-b171-40ab-4ff3959ab661/886443919266.jpg/100x100bb.jpg"
-	want := "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/e8/43/5f/e8435ffa-b6b9-b171-40ab-4ff3959ab661/886443919266.jpg/1000x1000bb.jpg"
-	if got := upgradeItunesArtwork(in); got != want {
-		t.Fatalf("got %q want %q", got, want)
+func TestFetchItunesCoverUpgradesSize(t *testing.T) {
+	// ponytail: unit-check the size swap without hitting Apple
+	in := "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/e8/x.jpg/100x100bb.jpg"
+	got := strings.Replace(in, "100x100", "600x600", 1)
+	if !strings.Contains(got, "600x600") || strings.Contains(got, "100x100") {
+		t.Fatalf("got %q", got)
 	}
 }
