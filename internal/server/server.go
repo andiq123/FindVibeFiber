@@ -62,6 +62,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	app.Get("/suggest", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Suggestions.GetSuggestions(c)
 	}))
+	app.Get("/cover", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Cover.GetCover(c)
+	}))
 	app.Get("/search", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Search.Search(c)
 	}))
@@ -72,6 +75,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	}))
 	favorites.Post("/:userId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Favorites.AddFavorite(c)
+	}))
+	favorites.Patch("/:songId/image", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Favorites.UpdateFavoriteImage(c)
 	}))
 	favorites.Delete("/:songId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Favorites.DeleteFavorite(c)

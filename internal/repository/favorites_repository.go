@@ -69,3 +69,21 @@ func (fr *FavoritesRepository) ReorderFavorites(ctx context.Context, songReorder
 		return nil
 	})
 }
+
+func (fr *FavoritesRepository) UpdateFavoriteImage(ctx context.Context, songId, image string) error {
+	// ponytail: don't use RowsAffected — Postgres reports 0 when value unchanged.
+	var n int64
+	if err := fr.DB.WithContext(ctx).Model(&domain.FavoriteSong{}).
+		Where("id = ?", songId).Count(&n).Error; err != nil {
+		return fmt.Errorf("favorites repository: update image lookup: %w", err)
+	}
+	if n == 0 {
+		return domain.ErrNotFound
+	}
+	if err := fr.DB.WithContext(ctx).Model(&domain.FavoriteSong{}).
+		Where("id = ?", songId).
+		Update("image", image).Error; err != nil {
+		return fmt.Errorf("favorites repository: update image failed: %w", err)
+	}
+	return nil
+}

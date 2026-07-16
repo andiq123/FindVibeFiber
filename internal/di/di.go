@@ -18,6 +18,7 @@ type Handlers struct {
 	Favorites   *handlers.FavoritesHandler
 	Suggestions *handlers.SuggestionsHandler
 	Search      *handlers.SearchHandler
+	Cover       *handlers.CoverHandler
 }
 
 func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
@@ -39,6 +40,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Auth:        handlers.NewAuthHandler(services.NewAuthService(authRepository)),
 		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
+		Cover:       handlers.NewCoverHandler(httpClient),
 		Search: handlers.NewSearchHandler(services.NewSearchService(
 			[]ports.IMusicProvider{
 				providers.NewMuzJamProvider(httpClient),

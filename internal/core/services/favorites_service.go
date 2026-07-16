@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
@@ -50,6 +51,18 @@ func (fs *FavoritesService) GetFavorites(ctx context.Context, userId string) ([]
 func (fs *FavoritesService) ReorderFavorites(ctx context.Context, songReorders []domain.ReorderRequest) error {
 	if err := fs.favoritesRepository.ReorderFavorites(ctx, songReorders); err != nil {
 		return fmt.Errorf("reorder favorites: %w", err)
+	}
+	return nil
+}
+
+func (fs *FavoritesService) UpdateFavoriteImage(ctx context.Context, songId, image string) error {
+	image = strings.TrimSpace(image)
+	// FavoriteSong.Image is varchar(1000); https-only keeps junk out of the vault.
+	if image == "" || len(image) > 1000 || !strings.HasPrefix(image, "https://") {
+		return domain.ErrInvalidInput
+	}
+	if err := fs.favoritesRepository.UpdateFavoriteImage(ctx, songId, image); err != nil {
+		return fmt.Errorf("update favorite image: %w", err)
 	}
 	return nil
 }

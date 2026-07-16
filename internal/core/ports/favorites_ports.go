@@ -11,6 +11,7 @@ type IFavoritesService interface {
 	AddFavorite(ctx context.Context, userId string, song domain.FavoriteSong) error
 	DeleteFavorite(ctx context.Context, songId string) error
 	ReorderFavorites(ctx context.Context, songReorders []domain.ReorderRequest) error
+	UpdateFavoriteImage(ctx context.Context, songId, image string) error
 }
 
 type IFavoritesRepository interface {
@@ -18,4 +19,5 @@ type IFavoritesRepository interface {
 	AddFavorite(ctx context.Context, userId string, song domain.FavoriteSong) error
 	DeleteFavorite(ctx context.Context, songId string) error
 	ReorderFavorites(ctx context.Context, songReorders []domain.ReorderRequest) error
+	UpdateFavoriteImage(ctx context.Context, songId, image string) error
 }
