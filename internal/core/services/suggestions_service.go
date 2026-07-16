@@ -28,8 +28,9 @@ func (ss *SuggestionsService) GetSuggestions(ctx context.Context, query, hl, gl 
 	hl = localeCode(hl, "en")
 	gl = strings.ToUpper(localeCode(gl, "US"))
 
+	// ds=yt = YouTube/music suggestions (not general web). Same JSON shape as firefox.
 	apiURL := fmt.Sprintf(
-		"https://suggestqueries.google.com/complete/search?client=firefox&hl=%s&gl=%s&q=%s",
+		"https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&hl=%s&gl=%s&q=%s",
 		url.QueryEscape(hl),
 		url.QueryEscape(gl),
 		url.QueryEscape(query),
