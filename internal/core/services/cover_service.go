@@ -15,6 +15,8 @@ import (
 
 const (
 	coverCacheTTL = 24 * time.Hour
+	// ponytail: empty iTunes misses must not lock out retries for a full day
+	coverMissTTL  = 15 * time.Minute
 	coverFillConc = 8
 	coverCacheMax = 10_000 // ponytail: wipe when huge; LRU if hit rate matters
 )
@@ -101,7 +103,11 @@ func (cs *CoverService) put(key, img string) {
 	if len(cs.cache) >= coverCacheMax {
 		cs.cache = make(map[string]coverEntry)
 	}
-	cs.cache[key] = coverEntry{url: img, exp: time.Now().Add(coverCacheTTL)}
+	ttl := coverCacheTTL
+	if img == "" {
+		ttl = coverMissTTL
+	}
+	cs.cache[key] = coverEntry{url: img, exp: time.Now().Add(ttl)}
 }
 
 func fetchItunesCover(ctx context.Context, client *http.Client, q string) string {

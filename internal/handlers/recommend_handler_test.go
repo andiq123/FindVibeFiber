@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 )
@@ -128,15 +129,62 @@ func TestResolveSkipsSeedAndRemixDupes(t *testing.T) {
 
 func TestExploreCacheRoundTrip(t *testing.T) {
 	h := &RecommendHandler{}
-	if _, ok := h.exploreSnap(); ok {
+	if _, ok := h.exploreSnap(true); ok {
 		t.Fatal("empty cache should miss")
 	}
 	h.exploreStore([]ExploreSection{{
 		ID: "romania", Title: "Romania",
 		Songs: []domain.Song{{Title: "A", Artist: "B", Link: "https://x.mp3"}},
 	}})
-	got, ok := h.exploreSnap()
+	got, ok := h.exploreSnap(true)
 	if !ok || len(got) != 1 || got[0].ID != "romania" || len(got[0].Songs) != 1 {
 		t.Fatalf("got %+v ok=%v", got, ok)
+	}
+	// Stale-beyond-TTL still serves last good payload.
+	h.exploreAt = h.exploreAt.Add(-exploreTTL - time.Minute)
+	if _, ok := h.exploreSnap(true); ok {
+		t.Fatal("fresh snap should miss after TTL")
+	}
+	stale, ok := h.exploreSnap(false)
+	if !ok || len(stale) != 1 {
+		t.Fatalf("stale snap got %+v ok=%v", stale, ok)
+	}
+}
+
+func TestResolveStrictRejectsWeakHits(t *testing.T) {
+	h := &RecommendHandler{
+		search: stubSearch{hits: map[string][]domain.Song{
+			"nero collide": {
+				{Title: "Promises", Artist: "Nero", Link: "https://wrong.mp3"},
+			},
+		}},
+	}
+	want := lastfmPair{"Nero", "Collide"}
+	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, true); ok {
+		t.Fatal("strict should reject artist-only / wrong-title hit")
+	}
+	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false)
+	if !ok || got.Link != "https://wrong.mp3" {
+		t.Fatalf("loose still accepts first hit, got %+v ok=%v", got, ok)
+	}
+}
+
+func TestRecommendCacheRoundTrip(t *testing.T) {
+	h := NewRecommendHandler(nil, "", stubSearch{}, nil)
+	key := songKey("Nero", "Promises")
+	if _, ok := h.recommendSnap(key); ok {
+		t.Fatal("empty recommend cache should miss")
+	}
+	songs := []domain.Song{{Title: "Bass Cannon", Artist: "Flux Pavilion", Link: "https://d.mp3"}}
+	h.recommendStore(key, songs)
+	got, ok := h.recommendSnap(key)
+	if !ok || len(got) != 1 || got[0].Link != "https://d.mp3" {
+		t.Fatalf("got %+v ok=%v", got, ok)
+	}
+	// Mutating returned slice must not poison the cache.
+	got[0].Link = "mutated"
+	again, _ := h.recommendSnap(key)
+	if again[0].Link != "https://d.mp3" {
+		t.Fatalf("cache poisoned: %q", again[0].Link)
 	}
 }

@@ -22,7 +22,11 @@ import (
 
 const (
 	recommendResolveCap = 5
+	/** Radio wants a longer same-vibe batch so the queue doesn't pivot every extend. */
+	radioResolveCap = 12
 	recommendSearchPeek = 8
+	recommendTTL        = 6 * time.Hour
+	recommendCacheCap   = 64
 
 	// ponytail: region hard-coded until settings grow a country picker
 	exploreCountry = "Romania"
@@ -30,6 +34,11 @@ const (
 	exploreCap     = 10
 	exploreFetch   = 16
 )
+
+type recommendEntry struct {
+	songs []domain.Song
+	at    time.Time
+}
 
 type ExploreSection struct {
 	ID       string        `json:"id"`
@@ -54,10 +63,16 @@ type RecommendHandler struct {
 	exploreMu       sync.Mutex
 	exploreSections []ExploreSection
 	exploreAt       time.Time
+
+	recommendMu    sync.Mutex
+	recommendCache map[string]recommendEntry
 }
 
 func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearchService, covers *services.CoverService) *RecommendHandler {
-	return &RecommendHandler{client: client, apiKey: apiKey, search: search, covers: covers}
+	return &RecommendHandler{
+		client: client, apiKey: apiKey, search: search, covers: covers,
+		recommendCache: make(map[string]recommendEntry),
+	}
 }
 
 // GET /explore?refresh=1 → chart shelves (Romania / Worldwide / vibes), server-cached 6h.
@@ -67,14 +82,17 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 	}
 	refresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
 	if !refresh {
-		if sections, ok := h.exploreSnap(); ok {
+		if sections, ok := h.exploreSnap(true); ok {
+			c.Set("Cache-Control", "public, max-age=21600")
 			return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": true})
 		}
 	}
 
 	sections, err := h.buildExplore(c.Context())
 	if err != nil || len(sections) == 0 {
-		if stale, ok := h.exploreSnap(); ok {
+		// Serve last good payload even past TTL — better than empty Explore.
+		if stale, ok := h.exploreSnap(false); ok {
+			c.Set("Cache-Control", "public, max-age=60")
 			return c.JSON(fiber.Map{"country": exploreCountry, "sections": stale, "cached": true})
 		}
 		if err != nil {
@@ -86,6 +104,7 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 	if len(sections) >= 2 {
 		h.exploreStore(sections)
 	}
+	c.Set("Cache-Control", "public, max-age=21600")
 	return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": false})
 }
 
@@ -247,10 +266,13 @@ func htmlUnescape(s string) string {
 	return s
 }
 
-func (h *RecommendHandler) exploreSnap() ([]ExploreSection, bool) {
+func (h *RecommendHandler) exploreSnap(freshOnly bool) ([]ExploreSection, bool) {
 	h.exploreMu.Lock()
 	defer h.exploreMu.Unlock()
-	if len(h.exploreSections) == 0 || time.Since(h.exploreAt) > exploreTTL {
+	if len(h.exploreSections) == 0 {
+		return nil, false
+	}
+	if freshOnly && time.Since(h.exploreAt) > exploreTTL {
 		return nil, false
 	}
 	out := make([]ExploreSection, len(h.exploreSections))
@@ -263,6 +285,61 @@ func (h *RecommendHandler) exploreStore(sections []ExploreSection) {
 	defer h.exploreMu.Unlock()
 	h.exploreSections = append([]ExploreSection(nil), sections...)
 	h.exploreAt = time.Now()
+}
+
+func (h *RecommendHandler) recommendSnap(key string) ([]domain.Song, bool) {
+	if key == "" {
+		return nil, false
+	}
+	h.recommendMu.Lock()
+	defer h.recommendMu.Unlock()
+	e, ok := h.recommendCache[key]
+	if !ok || len(e.songs) == 0 || time.Since(e.at) > recommendTTL {
+		return nil, false
+	}
+	out := make([]domain.Song, len(e.songs))
+	copy(out, e.songs)
+	return out, true
+}
+
+func (h *RecommendHandler) recommendStale(key string) ([]domain.Song, bool) {
+	if key == "" {
+		return nil, false
+	}
+	h.recommendMu.Lock()
+	defer h.recommendMu.Unlock()
+	e, ok := h.recommendCache[key]
+	if !ok || len(e.songs) == 0 {
+		return nil, false
+	}
+	out := make([]domain.Song, len(e.songs))
+	copy(out, e.songs)
+	return out, true
+}
+
+func (h *RecommendHandler) recommendStore(key string, songs []domain.Song) {
+	if key == "" || len(songs) == 0 {
+		return
+	}
+	h.recommendMu.Lock()
+	defer h.recommendMu.Unlock()
+	if h.recommendCache == nil {
+		h.recommendCache = make(map[string]recommendEntry)
+	}
+	// ponytail: bounded map — drop expired, else wipe when full
+	if len(h.recommendCache) >= recommendCacheCap {
+		for k, e := range h.recommendCache {
+			if time.Since(e.at) > recommendTTL {
+				delete(h.recommendCache, k)
+			}
+		}
+		if len(h.recommendCache) >= recommendCacheCap {
+			h.recommendCache = make(map[string]recommendEntry, recommendCacheCap/2)
+		}
+	}
+	cp := make([]domain.Song, len(songs))
+	copy(cp, songs)
+	h.recommendCache[key] = recommendEntry{songs: cp, at: time.Now()}
 }
 
 // GET /similar-artists?artist= → {artists: string[]} from Last.fm artist.getSimilar.
@@ -284,21 +361,28 @@ func (h *RecommendHandler) GetSimilarArtists(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"artists": names})
 }
 
-// GET /resolve?artist=&title= → one playable Song (search + fuzzy match).
+// GET /resolve?artist=&title=&strict=1 → one playable Song (search + fuzzy match).
+// strict=1: require artist+title overlap (Spotify import) — no "first hit" fallback.
 func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
 	artist := strings.TrimSpace(c.Query("artist"))
 	title := strings.TrimSpace(c.Query("title"))
 	if artist == "" || title == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and title required"})
 	}
-	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{})
+	strict := c.Query("strict") == "1" || strings.EqualFold(c.Query("strict"), "true")
+	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{}, strict)
 	if !ok {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
 	}
-	return c.JSON(song)
+	// Spotify import + play-from-resolve — fill art before the client saves to vault.
+	songs := []domain.Song{song}
+	h.covers.FillSongs(c.Context(), songs)
+	return c.JSON(songs[0])
 }
 
-// GET /recommend?artist=&title= → Song[] (Last.fm similar tracks / artists → unique playable hits).
+// GET /recommend?artist=&title=&mode=radio&offset=N
+// Cached 6h per normalized seed (+ mode/offset). Explore "because" stays diverse;
+// mode=radio keeps same-artist + similar so the station doesn't pivot genres.
 func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 	artist := strings.TrimSpace(c.Query("artist"))
 	title := strings.TrimSpace(c.Query("title"))
@@ -309,29 +393,72 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "LASTFM_API_KEY not set"})
 	}
 
+	radio := strings.EqualFold(c.Query("mode"), "radio")
+	offset, _ := strconv.Atoi(c.Query("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	capN := recommendResolveCap
+	if radio {
+		capN = radioResolveCap
+	}
+
+	refresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
+	key := songKey(artist, title)
+	if radio {
+		key = key + "|radio|" + strconv.Itoa(offset)
+	}
+	if !refresh {
+		if songs, ok := h.recommendSnap(key); ok {
+			c.Set("Cache-Control", "private, max-age=21600")
+			return c.JSON(songs)
+		}
+	}
+
 	seed := lastfmPair{artist: artist, title: title}
 	artists := artistCandidates(artist)
 
-	pairs, err := h.collectPairs(c.Context(), seed, artists)
+	pairs, err := h.collectPairs(c.Context(), seed, artists, radio)
 	if err != nil {
+		if stale, ok := h.recommendStale(key); ok {
+			c.Set("Cache-Control", "private, max-age=60")
+			return c.JSON(stale)
+		}
 		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Radio lookup failed. Try again."})
 	}
+	if radio && offset > 0 && len(pairs) > 0 {
+		off := offset % len(pairs)
+		pairs = append(pairs[off:], pairs[:off]...)
+	}
 
-	songs := h.resolve(c.Context(), pairs, seed)
+	songs := h.resolveN(c.Context(), pairs, seed, capN)
 	// ponytail: Last.fm often misses collab credits — fall back to our search by artist name.
 	if len(songs) == 0 {
 		songs = h.searchFallback(c.Context(), artists, seed)
+		if radio && len(songs) > capN {
+			songs = songs[:capN]
+		}
 	}
 	if len(songs) == 0 {
+		if stale, ok := h.recommendStale(key); ok {
+			c.Set("Cache-Control", "private, max-age=60")
+			return c.JSON(stale)
+		}
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Couldn't build a radio for this track"})
 	}
 	h.covers.FillSongs(c.Context(), songs)
+	h.recommendStore(key, songs)
+	c.Set("Cache-Control", "private, max-age=21600")
 	return c.JSON(songs)
 }
 
 type lastfmPair struct{ artist, title string }
 
-func (h *RecommendHandler) collectPairs(ctx context.Context, seed lastfmPair, artists []string) ([]lastfmPair, error) {
+func (h *RecommendHandler) collectPairs(ctx context.Context, seed lastfmPair, artists []string, radio bool) ([]lastfmPair, error) {
+	pairCap := recommendResolveCap * 2
+	if radio {
+		pairCap = radioResolveCap * 3 // more candidates so offset rotates through a neighborhood
+	}
 	var pairs []lastfmPair
 
 	for _, a := range artists {
@@ -340,13 +467,13 @@ func (h *RecommendHandler) collectPairs(ctx context.Context, seed lastfmPair, ar
 			return nil, err
 		}
 		pairs = uniquePairs(append(pairs, similar...), seed)
-		if len(pairs) >= recommendResolveCap {
+		if len(pairs) >= pairCap {
 			break
 		}
 	}
 
 	for _, a := range artists {
-		if len(pairs) >= recommendResolveCap {
+		if len(pairs) >= pairCap {
 			break
 		}
 		extra, err := h.pairsFromSimilarArtists(ctx, a, seed.title)
@@ -357,7 +484,7 @@ func (h *RecommendHandler) collectPairs(ctx context.Context, seed lastfmPair, ar
 	}
 
 	for _, a := range artists {
-		if len(pairs) >= recommendResolveCap {
+		if len(pairs) >= pairCap {
 			break
 		}
 		tops, err := h.lastfmArtistTop(ctx, a, seed.title)
@@ -367,9 +494,12 @@ func (h *RecommendHandler) collectPairs(ctx context.Context, seed lastfmPair, ar
 		pairs = uniquePairs(append(pairs, tops...), seed)
 	}
 
-	others := filterNotSeedArtists(pairs, artists)
-	if len(others) >= 3 {
-		return others, nil
+	// Explore "because": prefer other artists. Radio: keep same-artist tops in the mix.
+	if !radio {
+		others := filterNotSeedArtists(pairs, artists)
+		if len(others) >= 3 {
+			return others, nil
+		}
 	}
 	return pairs, nil
 }
@@ -737,7 +867,7 @@ func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, see
 		wg.Add(1)
 		go func(i int, p lastfmPair) {
 			defer wg.Done()
-			song, ok := h.resolveOne(ctx, p, seed)
+			song, ok := h.resolveOne(ctx, p, seed, false)
 			ch <- slot{i: i, song: song, ok: ok}
 		}(i, p)
 	}
@@ -791,7 +921,7 @@ func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int) []
 	return out
 }
 
-func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair) (domain.Song, bool) {
+func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair, strict bool) (domain.Song, bool) {
 	resp, err := h.search.Search(ctx, want.artist+" "+want.title, 1)
 	if err != nil || resp == nil || len(resp.Songs) == 0 {
 		return domain.Song{}, false
@@ -821,12 +951,16 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 		if artistOK && titleOK && fallback.Link == "" {
 			fallback = s
 		}
-		if artistOK && fallback.Link == "" {
+		// Loose path only: artist match alone can fill fallback (radio/explore).
+		if !strict && artistOK && fallback.Link == "" {
 			fallback = s
 		}
 	}
 	if fallback.Link != "" {
 		return fallback, true
+	}
+	if strict {
+		return domain.Song{}, false
 	}
 	// Last: first result that isn't the seed song.
 	for _, s := range resp.Songs[:n] {
