@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andiq123/FindVibeFiber/internal/core/constants"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
@@ -23,7 +24,7 @@ func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchCon
 		config = domain.DefaultSearchConfig()
 	}
 	if timeout <= 0 {
-		timeout = time.Second
+		timeout = time.Duration(constants.DefaultSearchTimeout) * time.Second
 	}
 
 	priorities := make(map[string]int, len(providers))
@@ -66,7 +67,7 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	return domain.NewSearchResponse(songs, pickPagination(scored)), nil
 }
 
-// collect waits for every provider in parallel; each is cancelled after searchTimeout (default 1s).
+// collect waits for every provider in parallel; each is cancelled after searchTimeout (default 2s).
 func (ss *SearchService) collect(ctx context.Context, query string, page int) []domain.ProviderResult {
 	n := len(ss.providers)
 	ch := make(chan []domain.ProviderResult, n)
