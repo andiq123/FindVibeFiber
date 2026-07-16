@@ -284,6 +284,20 @@ func (h *RecommendHandler) GetSimilarArtists(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"artists": names})
 }
 
+// GET /resolve?artist=&title= → one playable Song (search + fuzzy match).
+func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
+	artist := strings.TrimSpace(c.Query("artist"))
+	title := strings.TrimSpace(c.Query("title"))
+	if artist == "" || title == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and title required"})
+	}
+	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{})
+	if !ok {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
+	}
+	return c.JSON(song)
+}
+
 // GET /recommend?artist=&title= → Song[] (Last.fm similar tracks / artists → unique playable hits).
 func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 	artist := strings.TrimSpace(c.Query("artist"))

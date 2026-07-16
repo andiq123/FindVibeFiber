@@ -23,6 +23,7 @@ type Handlers struct {
 	Cover       *handlers.CoverHandler
 	Recommend   *handlers.RecommendHandler
 	Lyrics      *handlers.LyricsHandler
+	Spotify     *handlers.SpotifyHandler
 }
 
 func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
@@ -58,5 +59,6 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Search:      handlers.NewSearchHandler(searchSvc, covers),
 		Recommend:   handlers.NewRecommendHandler(httpClient, os.Getenv("LASTFM_API_KEY"), searchSvc, covers),
 		Lyrics:      handlers.NewLyricsHandler(httpClient),
+		Spotify:     handlers.NewSpotifyHandler(httpClient),
 	}
 }

@@ -80,6 +80,12 @@ func NewServer(cfg config.ServerConfig) *Server {
 	app.Get("/search", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Search.Search(c)
 	}))
+	app.Get("/resolve", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Recommend.GetResolve(c)
+	}))
+	app.Get("/spotify/playlist", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Spotify.GetPlaylist(c)
+	}))
 
 	favorites := app.Group("/favorites")
 	favorites.Get("/:userId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
