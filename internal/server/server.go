@@ -65,6 +65,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	app.Get("/cover", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Cover.GetCover(c)
 	}))
+	app.Get("/recommend", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Recommend.GetRecommend(c)
+	}))
 	app.Get("/search", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Search.Search(c)
 	}))

@@ -1,6 +1,8 @@
 package di
 
 import (
+	"os"
+
 	"github.com/andiq123/FindVibeFiber/internal/config"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
@@ -19,6 +21,7 @@ type Handlers struct {
 	Suggestions *handlers.SuggestionsHandler
 	Search      *handlers.SearchHandler
 	Cover       *handlers.CoverHandler
+	Recommend   *handlers.RecommendHandler
 }
 
 func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
@@ -35,19 +38,22 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 	searchConfig := domain.DefaultSearchConfig()
 	searchConfig.MaxResults = cfg.Search.MaxResults
 
+	searchSvc := services.NewSearchService(
+		[]ports.IMusicProvider{
+			providers.NewMuzJamProvider(httpClient),
+			providers.NewMp3mnProvider(httpClient),
+		},
+		searchConfig,
+		cfg.Search.Timeout,
+	)
+
 	return Handlers{
 		Health:      handlers.NewHealthHandler(httpClient),
 		Auth:        handlers.NewAuthHandler(services.NewAuthService(authRepository)),
 		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
 		Cover:       handlers.NewCoverHandler(httpClient),
-		Search: handlers.NewSearchHandler(services.NewSearchService(
-			[]ports.IMusicProvider{
-				providers.NewMuzJamProvider(httpClient),
-				providers.NewMp3mnProvider(httpClient),
-			},
-			searchConfig,
-			cfg.Search.Timeout,
-		)),
+		Search:      handlers.NewSearchHandler(searchSvc),
+		Recommend:   handlers.NewRecommendHandler(httpClient, os.Getenv("LASTFM_API_KEY"), searchSvc),
 	}
 }
