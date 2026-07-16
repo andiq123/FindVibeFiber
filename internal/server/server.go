@@ -68,6 +68,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	app.Get("/recommend", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Recommend.GetRecommend(c)
 	}))
+	app.Get("/similar-artists", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Recommend.GetSimilarArtists(c)
+	}))
 	app.Get("/explore", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Recommend.GetExplore(c)
 	}))

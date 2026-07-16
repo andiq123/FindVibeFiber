@@ -28,6 +28,38 @@ func TestCoreTitleStripsRemixVariants(t *testing.T) {
 	}
 }
 
+func TestParseChartTitle(t *testing.T) {
+	cases := []struct {
+		raw, artist, title string
+	}{
+		{"VANILLA x ALEX VELEA - 7 din 7 (VIDEOCLIP OFICIAL)", "VANILLA", "7 din 7"},
+		{"Denis Ramniceanu x BABASHA - Vara nu e vara | Official video", "Denis Ramniceanu", "Vara nu e vara"},
+		{"IAN x AZTECA - FOCU'", "IAN", "FOCU'"},
+		{"MIRA - Caramela | Official Video", "MIRA", "Caramela"},
+	}
+	for _, tc := range cases {
+		a, title, ok := parseChartTitle(tc.raw)
+		if !ok || a != tc.artist || title != tc.title {
+			t.Fatalf("%q → (%q, %q, %v) want (%q, %q)", tc.raw, a, title, ok, tc.artist, tc.title)
+		}
+	}
+}
+
+func TestParseKworbMusicPairsUsesMusicTable(t *testing.T) {
+	html := `
+<div class="overall"><table><tbody>
+<tr><td class="text"><div><a href="#">Gaming video not music</a></div></td></tr>
+</tbody></table></div>
+<div class="music" style="display: none;"><table id="trendingcountry"><tbody>
+<tr><td class="text"><div><a href="#">VANILLA x ALEX VELEA - 7 din 7 | Official</a></div></td></tr>
+<tr><td class="text"><div><a href="#">MIRA - Caramela | Official Video</a></div></td></tr>
+</tbody></table></div>`
+	got := parseKworbMusicPairs(html)
+	if len(got) != 2 || got[0].artist != "VANILLA" || got[1].title != "Caramela" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 func TestUniquePairsDropsRemixDupes(t *testing.T) {
 	seed := lastfmPair{"Vicetone", "Collide"}
 	got := uniquePairs([]lastfmPair{

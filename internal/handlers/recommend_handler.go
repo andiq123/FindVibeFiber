@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -98,6 +100,8 @@ func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, 
 		{"romania", "Romania", "Hot this week", url.Values{
 			"method": {"geo.getTopTracks"}, "country": {exploreCountry}, "limit": {limit},
 		}},
+		// ponytail: no free TikTok RO API — YouTube Music trending RO is the closest viral proxy
+		{"viral-ro", "Viral Romania", "Hot trends right now", nil},
 		{"worldwide", "Worldwide", "Global chart", url.Values{
 			"method": {"chart.getTopTracks"}, "limit": {limit},
 		}},
@@ -109,13 +113,19 @@ func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, 
 		}},
 	}
 
-	// ponytail: one shelf at a time — 4× parallel resolve floods providers and returns 1 song.
+	// ponytail: one shelf at a time — parallel resolve floods providers and returns 1 song.
 	out := make([]ExploreSection, 0, len(jobs))
 	for _, job := range jobs {
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		pairs, err := h.lastfmTracks(ctx, job.q, "tracks")
+		var pairs []lastfmPair
+		var err error
+		if job.id == "viral-ro" {
+			pairs, err = h.kworbROViral(ctx)
+		} else {
+			pairs, err = h.lastfmTracks(ctx, job.q, "tracks")
+		}
 		if err != nil || len(pairs) == 0 {
 			continue
 		}
@@ -134,6 +144,109 @@ func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, 
 	return out, nil
 }
 
+// YouTube Music trending Romania via kworb (public HTML). Closest free stand-in for TikTok RO.
+const kworbROViralURL = "https://kworb.net/youtube/trending/ro.html"
+
+func (h *RecommendHandler) kworbROViral(ctx context.Context) ([]lastfmPair, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, kworbROViralURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "FindVibe/1.0")
+	req.Header.Set("Accept", "text/html")
+	res, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("kworb viral: HTTP %d", res.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	return parseKworbMusicPairs(string(body)), nil
+}
+
+var kworbAnchorRe = regexp.MustCompile(`(?i)<a[^>]*>([^<]+)</a>`)
+
+// parseKworbMusicPairs reads the music-only table (not overall trending with gaming/vlogs).
+func parseKworbMusicPairs(html string) []lastfmPair {
+	start := strings.Index(html, `class="music"`)
+	if start < 0 {
+		return nil
+	}
+	chunk := html[start:]
+	if i := strings.Index(chunk, "</table>"); i >= 0 {
+		chunk = chunk[:i]
+	}
+	seen := map[string]bool{}
+	out := make([]lastfmPair, 0, exploreFetch)
+	for _, m := range kworbAnchorRe.FindAllStringSubmatch(chunk, -1) {
+		if len(out) >= exploreFetch {
+			break
+		}
+		artist, title, ok := parseChartTitle(m[1])
+		if !ok {
+			continue
+		}
+		k := songKey(artist, title)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, lastfmPair{artist: artist, title: title})
+	}
+	return out
+}
+
+// "VANILLA x ALEX VELEA - 7 din 7 | Official Video" → ("VANILLA", "7 din 7")
+func parseChartTitle(raw string) (artist, title string, ok bool) {
+	raw = strings.TrimSpace(htmlUnescape(raw))
+	if raw == "" {
+		return "", "", false
+	}
+	if i := strings.Index(raw, "|"); i >= 0 {
+		raw = strings.TrimSpace(raw[:i])
+	}
+	sep := " - "
+	i := strings.Index(raw, sep)
+	if i < 0 {
+		sep = " – "
+		i = strings.Index(raw, sep)
+	}
+	if i <= 0 {
+		return "", "", false
+	}
+	artist = chartPrimaryArtist(strings.TrimSpace(raw[:i]))
+	title = strings.TrimSpace(raw[i+len(sep):])
+	title = parenRe.ReplaceAllString(title, " ")
+	title = spaceRe.ReplaceAllString(strings.TrimSpace(title), " ")
+	if artist == "" || title == "" {
+		return "", "", false
+	}
+	return artist, title, true
+}
+
+func chartPrimaryArtist(a string) string {
+	for _, sep := range []string{" x ", " ❌", " ✘", " × ", " & ", " feat.", " ft.", " featuring "} {
+		if i := strings.Index(strings.ToLower(a), strings.ToLower(sep)); i > 0 {
+			return strings.TrimSpace(a[:i])
+		}
+	}
+	return strings.TrimSpace(a)
+}
+
+func htmlUnescape(s string) string {
+	s = strings.ReplaceAll(s, "&amp;", "&")
+	s = strings.ReplaceAll(s, "&quot;", `"`)
+	s = strings.ReplaceAll(s, "&#39;", "'")
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	return s
+}
+
 func (h *RecommendHandler) exploreSnap() ([]ExploreSection, bool) {
 	h.exploreMu.Lock()
 	defer h.exploreMu.Unlock()
@@ -150,6 +263,25 @@ func (h *RecommendHandler) exploreStore(sections []ExploreSection) {
 	defer h.exploreMu.Unlock()
 	h.exploreSections = append([]ExploreSection(nil), sections...)
 	h.exploreAt = time.Now()
+}
+
+// GET /similar-artists?artist= → {artists: string[]} from Last.fm artist.getSimilar.
+func (h *RecommendHandler) GetSimilarArtists(c fiber.Ctx) error {
+	if h.apiKey == "" {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "LASTFM_API_KEY not set"})
+	}
+	artist := strings.TrimSpace(c.Query("artist"))
+	if artist == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist required"})
+	}
+	names, err := h.lastfmSimilarArtists(c.Context(), artist)
+	if err != nil {
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't load similar artists"})
+	}
+	if len(names) > 12 {
+		names = names[:12]
+	}
+	return c.JSON(fiber.Map{"artists": names})
 }
 
 // GET /recommend?artist=&title= → Song[] (Last.fm similar tracks / artists → unique playable hits).
