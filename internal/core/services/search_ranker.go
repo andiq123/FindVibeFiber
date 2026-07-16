@@ -52,7 +52,7 @@ func (rr *SearchRanker) RankResults(results []domain.ProviderResult, query strin
 			diversityBonus(artists[i], artistCount)*rr.weights.Diversity
 		score *= remixPenalty(titles[i], q)
 		if r.Song.Image != "" {
-			score += 0.05
+			score += 0.03
 		}
 
 		scored[i] = ScoredResult{Result: r, FinalScore: score}
@@ -82,28 +82,46 @@ func matchScore(title, artist, query string) float64 {
 	if len(qWords) == 0 {
 		return 0.5
 	}
-	cWords := strings.Fields(combined)
-	if allContained(qWords, cWords) {
-		return 0.92
+	titleWords := strings.Fields(title)
+	artistWords := strings.Fields(artist)
+	combinedWords := strings.Fields(combined)
+
+	matched := countMatchedWords(qWords, combinedWords)
+	full := len(qWords)
+
+	// Every query word hit (fuzzy) — strongest signal for top match.
+	if matched == full {
+		score := 0.93
+		if full > 1 && countMatchedWords(qWords, titleWords) > 0 && countMatchedWords(qWords, artistWords) > 0 {
+			score = 0.97 // e.g. "bistro" title + "morgenshtern" artist
+		}
+		return score
 	}
 
-	tRatio := float64(countOverlap(qWords, strings.Fields(title))) / float64(len(qWords))
-	aRatio := float64(countOverlap(qWords, strings.Fields(artist))) / float64(len(qWords))
-	word := tRatio*0.7 + aRatio*0.3
+	ratio := float64(matched) / float64(full)
+	score := ratio * 0.90
 
-	bonus := 0.0
+	titleHits := countMatchedWords(qWords, titleWords)
+	artistHits := countMatchedWords(qWords, artistWords)
+	if titleHits > 0 && artistHits > 0 {
+		score += 0.08
+	} else if titleHits > 0 {
+		score += 0.03
+	}
+
 	switch {
 	case strings.Contains(title, query):
-		bonus = 0.15
+		score += 0.10
 	case strings.Contains(artist, query):
-		bonus = 0.10
+		score += 0.06
 	}
 
-	partial := 0.0
-	if word > 0 {
-		partial = word * 0.85
+	// ponytail: self-titled echo on multi-word search (Morgenstern/Morgenstern) — weak top match
+	if full > 1 && title == artist && matched < full {
+		score *= 0.55
 	}
-	return math.Min(math.Max(partial, word+bonus), 0.91)
+
+	return math.Min(score, 0.92)
 }
 
 func positionScore(rank int) float64 {
@@ -145,20 +163,32 @@ func remixPenalty(title, query string) float64 {
 	}
 }
 
-func allContained(needles, haystack []string) bool {
-	for _, n := range needles {
-		if !slices.Contains(haystack, n) {
-			return false
-		}
+// wordMatches: exact, substring, or long shared prefix (morgenstern/morgenshtern).
+func wordMatches(a, b string) bool {
+	if a == b {
+		return true
 	}
-	return true
+	if len(a) < 3 || len(b) < 3 {
+		return false
+	}
+	if strings.Contains(a, b) || strings.Contains(b, a) {
+		return true
+	}
+	prefix := 0
+	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+		prefix++
+	}
+	return prefix >= 6 && absInt(len(a)-len(b)) <= 2
 }
 
-func countOverlap(a, b []string) int {
+func countMatchedWords(queryWords, fieldWords []string) int {
 	n := 0
-	for _, x := range a {
-		if slices.Contains(b, x) {
-			n++
+	for _, q := range queryWords {
+		for _, f := range fieldWords {
+			if wordMatches(q, f) {
+				n++
+				break
+			}
 		}
 	}
 	return n
@@ -171,4 +201,11 @@ func hasAny(words, keywords []string) bool {
 		}
 	}
 	return false
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

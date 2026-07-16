@@ -16,10 +16,10 @@ func DefaultSearchConfig() *SearchConfig {
 	return &SearchConfig{
 		MaxResults: 20,
 		RankingWeights: RankingWeights{
-			ProviderPriority: 0.10,
-			MatchScore:       0.70, // query accuracy first
-			Position:         0.10,
-			Diversity:        0.10,
+			ProviderPriority: 0.08,
+			MatchScore:       0.82, // query word coverage dominates top match
+			Position:         0.05,
+			Diversity:        0.05,
 		},
 	}
 }
