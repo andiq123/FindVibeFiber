@@ -83,16 +83,3 @@ func migrate(db *gorm.DB) {
 		}
 	}
 }
-
-func CloseDb(db *gorm.DB) {
-	sqlDB, err := db.DB()
-	if err != nil {
-		utils.GetLogger().Error("Failed to get database connection for close", "error", err)
-		return
-	}
-	if err := sqlDB.Close(); err != nil {
-		utils.GetLogger().Error("Failed to close database connection", "error", err)
-		return
-	}
-	utils.GetLogger().Info("Database connection closed")
-}

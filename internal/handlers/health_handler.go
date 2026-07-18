@@ -36,10 +36,6 @@ func NewHealthHandler(client *http.Client) *HealthHandler {
 	return &HealthHandler{client: client}
 }
 
-func (hh *HealthHandler) GetHealth(c fiber.Ctx) error {
-	return c.JSON("Pong")
-}
-
 func (hh *HealthHandler) GetSources(c fiber.Ctx) error {
 	out := make([]sourceStatus, len(musicSources))
 	var wg sync.WaitGroup

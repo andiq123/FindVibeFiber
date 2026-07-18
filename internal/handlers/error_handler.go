@@ -22,8 +22,6 @@ func HandleError(c fiber.Ctx, err error) error {
 		statusCode = http.StatusConflict
 	case errors.Is(err, domain.ErrInvalidInput):
 		statusCode = http.StatusBadRequest
-	case errors.Is(err, domain.ErrUnauthorized):
-		statusCode = http.StatusUnauthorized
 	}
 
 	return c.Status(statusCode).JSON(fiber.Map{
