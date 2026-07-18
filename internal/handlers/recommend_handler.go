@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	recommendResolveCap = 5
+	recommendResolveCap = 10 // Explore "Because" rails — longer browse before radio
 	/** Radio wants a longer same-vibe batch so the queue doesn't pivot every extend. */
-	radioResolveCap = 12
+	radioResolveCap     = 12
 	recommendSearchPeek = 8
 	recommendTTL        = 6 * time.Hour
 	recommendCacheCap   = 64
