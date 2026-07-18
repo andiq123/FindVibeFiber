@@ -41,3 +41,18 @@ func TestCleanLyricsQueryStripsSiteTags(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestLyricsCacheHitAndMissTTL(t *testing.T) {
+	h := NewLyricsHandler(nil)
+	key := lyricsCacheKey("Artist", "Title [Official Audio]")
+	h.cachePut(key, "hello", "")
+	text, code, ok := h.cacheGet(key)
+	if !ok || text != "hello" || code != "" {
+		t.Fatalf("hit: ok=%v text=%q code=%q", ok, text, code)
+	}
+	h.cachePut(key, "", "not_found")
+	_, code, ok = h.cacheGet(key)
+	if !ok || code != "not_found" {
+		t.Fatalf("miss: ok=%v code=%q", ok, code)
+	}
+}

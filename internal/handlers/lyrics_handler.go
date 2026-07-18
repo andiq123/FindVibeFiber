@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -17,12 +19,26 @@ var (
 	metaJunk = regexp.MustCompile(`(?i)[\[\(][^\]\)]*(?:\.[a-z]{2,}|\bwww\b|https?://|\bmp3\b|\blyrics\b|\bofficial\b|\baudio\b|\bhd\b|\bhq\b|\b320\b)[^\]\)]*[\]\)]`)
 )
 
+const (
+	lyricsHitTTL  = 6 * time.Hour
+	lyricsMissTTL = 30 * time.Minute
+	lyricsCacheCap = 256
+)
+
+type lyricsEntry struct {
+	text string
+	code string // "", "not_found", "instrumental"
+	at   time.Time
+}
+
 type LyricsHandler struct {
 	client *http.Client
+	mu     sync.Mutex
+	cache  map[string]lyricsEntry
 }
 
 func NewLyricsHandler(client *http.Client) *LyricsHandler {
-	return &LyricsHandler{client: client}
+	return &LyricsHandler{client: client, cache: make(map[string]lyricsEntry)}
 }
 
 // GET /lyrics?artist=&title= → {"lyrics":"..."} or {"error","code"}.
@@ -36,6 +52,11 @@ func (h *LyricsHandler) GetLyrics(c fiber.Ctx) error {
 		})
 	}
 
+	key := lyricsCacheKey(artist, title)
+	if text, code, ok := h.cacheGet(key); ok {
+		return h.writeLyrics(c, text, code)
+	}
+
 	text, code, err := h.lookup(c.Context(), artist, title)
 	if err != nil {
 		return c.Status(http.StatusBadGateway).JSON(fiber.Map{
@@ -43,6 +64,11 @@ func (h *LyricsHandler) GetLyrics(c fiber.Ctx) error {
 			"code":  "upstream",
 		})
 	}
+	h.cachePut(key, text, code)
+	return h.writeLyrics(c, text, code)
+}
+
+func (h *LyricsHandler) writeLyrics(c fiber.Ctx, text, code string) error {
 	switch code {
 	case "instrumental":
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{
@@ -56,6 +82,65 @@ func (h *LyricsHandler) GetLyrics(c fiber.Ctx) error {
 		})
 	}
 	return c.JSON(fiber.Map{"lyrics": text})
+}
+
+func lyricsCacheKey(artist, title string) string {
+	a := strings.ToLower(cleanLyricsQuery(artist))
+	t := strings.ToLower(cleanLyricsQuery(title))
+	if a == "" {
+		a = strings.ToLower(strings.TrimSpace(artist))
+	}
+	if t == "" {
+		t = strings.ToLower(strings.TrimSpace(title))
+	}
+	return a + "\x00" + t
+}
+
+func (h *LyricsHandler) cacheGet(key string) (text, code string, ok bool) {
+	if key == "" {
+		return "", "", false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, hit := h.cache[key]
+	if !hit {
+		return "", "", false
+	}
+	ttl := lyricsHitTTL
+	if e.code != "" {
+		ttl = lyricsMissTTL
+	}
+	if time.Since(e.at) > ttl {
+		delete(h.cache, key)
+		return "", "", false
+	}
+	return e.text, e.code, true
+}
+
+func (h *LyricsHandler) cachePut(key, text, code string) {
+	if key == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cache == nil {
+		h.cache = make(map[string]lyricsEntry)
+	}
+	if len(h.cache) >= lyricsCacheCap {
+		for k, e := range h.cache {
+			ttl := lyricsHitTTL
+			if e.code != "" {
+				ttl = lyricsMissTTL
+			}
+			if time.Since(e.at) > ttl {
+				delete(h.cache, k)
+			}
+		}
+		if len(h.cache) >= lyricsCacheCap {
+			h.cache = make(map[string]lyricsEntry, lyricsCacheCap/2)
+		}
+	}
+	h.cache[key] = lyricsEntry{text: text, code: code, at: time.Now()}
 }
 
 type lrclibHit struct {

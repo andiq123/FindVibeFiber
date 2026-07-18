@@ -24,7 +24,8 @@ const (
 	// Server Configuration
 	DefaultServerPort  = "8080"
 	DefaultReadTimeout = 10  // seconds
-	DefaultWriteTimeout = 10 // seconds
+	// Radio/lyrics cold paths can exceed 10s (Last.fm + resolve / LRCLIB).
+	DefaultWriteTimeout = 20 // seconds
 	DefaultIdleTimeout  = 120 // seconds
 
 	// Request Limits
