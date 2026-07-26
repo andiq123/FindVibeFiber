@@ -45,7 +45,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		cfg.HTTP.IdleTimeout,
 		utils.ParseProxyList(cfg.HTTP.ProviderProxies),
 	)
-	muzjam := providers.NewMuzJamProvider(scrape.Client).UseRotator(scrape)
+	mp3pm := providers.NewMp3pmProvider(scrape.Client).UseRotator(scrape)
 	mp3mn := providers.NewMp3mnProvider(scrape.Client)
 	mp3mn.WithRotator(scrape)
 
@@ -54,7 +54,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 
 	covers := services.NewCoverService(httpClient)
 	searchSvc := services.NewSearchService(
-		[]ports.IMusicProvider{muzjam, mp3mn},
+		[]ports.IMusicProvider{mp3pm, mp3mn},
 		searchConfig,
 		cfg.Search.Timeout,
 	)

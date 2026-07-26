@@ -28,11 +28,11 @@ type sourceStatus struct {
 
 var musicSources = []sourceSpec{
 	{
-		Name: "MuzJam",
-		Host: "muzjam.org",
-		// Probe the real scrape path — homepage <500 was a false positive.
-		URL:     "https://muzjam.org/search/test",
-		Markers: [][]byte{[]byte(`id="results"`), []byte(`class="item"`), []byte(`a.link`)},
+		Name: "Mp3pm",
+		Host: "mp3.pm",
+		// Result list markup used by the scrape path.
+		URL:     "https://mp3.pm/",
+		Markers: [][]byte{[]byte(`cplayer-sound-item`), []byte(`data-sound-url`)},
 	},
 	{
 		Name:    "Mp3mn",

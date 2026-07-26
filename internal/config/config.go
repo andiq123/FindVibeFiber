@@ -24,7 +24,7 @@ type HTTPConfig struct {
 	MaxIdleConns   int
 	MaxIdlePerHost int
 	IdleTimeout    time.Duration
-	// ProviderProxies — comma/newline list for MuzJam/Mp3mn scrape rotation.
+	// ProviderProxies — comma/newline list for Mp3pm/Mp3mn scrape rotation.
 	// Also honors HTTP_PROXY / HTTPS_PROXY / ALL_PROXY via the scrape transport.
 	ProviderProxies string
 }

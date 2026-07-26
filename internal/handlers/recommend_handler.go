@@ -1077,7 +1077,7 @@ func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, see
 	}
 	ch := make(chan slot, len(pairs))
 	var wg sync.WaitGroup
-	// Bound fan-out — unbounded parallel /search was flooding MuzJam/Mp3mn.
+	// Bound fan-out — unbounded parallel /search was flooding Mp3pm/Mp3mn.
 	sem := make(chan struct{}, constants.DefaultResolveConcurrency)
 	for i, p := range pairs {
 		wg.Add(1)

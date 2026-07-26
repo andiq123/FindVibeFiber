@@ -12,11 +12,11 @@ import (
 // ponytail: prove slow + fast providers both land before rank.
 func TestSearchMergesAllProviders(t *testing.T) {
 	slow := stubProvider{
-		name:     "MuzJam",
+		name:     "Mp3pm",
 		priority: 8,
 		delay:    30 * time.Millisecond,
 		results: []domain.ProviderResult{
-			{Song: domain.Song{Title: "Bistro", Artist: "Morgenstern", Link: "https://a.mp3"}, Provider: "MuzJam", ProviderRank: 2},
+			{Song: domain.Song{Title: "Bistro", Artist: "Morgenstern", Link: "https://a.mp3"}, Provider: "Mp3pm", ProviderRank: 2},
 		},
 	}
 	fast := stubProvider{
@@ -43,7 +43,7 @@ func TestSearchMergesAllProviders(t *testing.T) {
 func TestSearchDedupesSameTrackAcrossProviders(t *testing.T) {
 	dup := []domain.ProviderResult{
 		{Song: domain.Song{Title: "Hello", Artist: "Adele", Link: "https://slow.mp3"}, Provider: "Mp3mn", ProviderRank: 3},
-		{Song: domain.Song{Title: "Hello", Artist: "Adele", Image: "https://img.jpg", Link: "https://fast.mp3"}, Provider: "MuzJam", ProviderRank: 1},
+		{Song: domain.Song{Title: "Hello", Artist: "Adele", Image: "https://img.jpg", Link: "https://fast.mp3"}, Provider: "Mp3pm", ProviderRank: 1},
 	}
 	got := dedupe(dup)
 	if len(got) != 1 {
@@ -55,7 +55,7 @@ func TestSearchDedupesSameTrackAcrossProviders(t *testing.T) {
 	if got[0].Song.Link != "https://fast.mp3" {
 		t.Fatalf("link from better rank: %q", got[0].Song.Link)
 	}
-	if got[0].Provider != "Mp3mn+MuzJam" && got[0].Provider != "MuzJam+Mp3mn" {
+	if got[0].Provider != "Mp3mn+Mp3pm" && got[0].Provider != "Mp3pm+Mp3mn" {
 		t.Fatalf("combined provider: %q", got[0].Provider)
 	}
 }
@@ -68,7 +68,7 @@ func TestMergeDuplicateFillsGaps(t *testing.T) {
 	}
 	b := domain.ProviderResult{
 		Song:         domain.Song{Title: "X", Artist: "Y", Image: "https://img.jpg", Link: "https://b.mp3"},
-		Provider:     "MuzJam",
+		Provider:     "Mp3pm",
 		ProviderRank: 1,
 	}
 	mergeDuplicate(&a, &b)
@@ -81,7 +81,7 @@ func TestMergeDuplicateFillsGaps(t *testing.T) {
 	if a.ProviderRank != 1 {
 		t.Fatalf("rank not improved: %d", a.ProviderRank)
 	}
-	if a.Provider != "Mp3mn+MuzJam" {
+	if a.Provider != "Mp3mn+Mp3pm" {
 		t.Fatalf("provider: %q", a.Provider)
 	}
 }
