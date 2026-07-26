@@ -55,10 +55,23 @@ func (bp *BaseProvider) fetchDocument(ctx context.Context, rawURL, referer strin
 }
 
 func absoluteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, "//") {
 		return "https:" + raw
 	}
+	if strings.HasPrefix(raw, "http://") {
+		return "https://" + strings.TrimPrefix(raw, "http://")
+	}
 	return raw
+}
+
+// playableLink — stream URLs we hand to iOS AVPlayer (https only).
+func playableLink(raw string) string {
+	u := absoluteURL(raw)
+	if !strings.HasPrefix(u, "https://") {
+		return ""
+	}
+	return u
 }
 
 func text(s *goquery.Selection) string {

@@ -13,6 +13,7 @@ type IFavoritesService interface {
 	ReorderFavorites(ctx context.Context, songReorders []domain.ReorderRequest) error
 	UpdateFavoriteImage(ctx context.Context, songId, image string) error
 	UpdateFavoriteLyrics(ctx context.Context, songId, lyrics string) error
+	UpdateFavoriteLink(ctx context.Context, songId, link string) error
 }
 
 type IFavoritesRepository interface {
@@ -22,4 +23,5 @@ type IFavoritesRepository interface {
 	ReorderFavorites(ctx context.Context, songReorders []domain.ReorderRequest) error
 	UpdateFavoriteImage(ctx context.Context, songId, image string) error
 	UpdateFavoriteLyrics(ctx context.Context, songId, lyrics string) error
+	UpdateFavoriteLink(ctx context.Context, songId, link string) error
 }

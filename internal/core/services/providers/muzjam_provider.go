@@ -51,14 +51,18 @@ func (p *MuzJamProvider) parseResults(doc *goquery.Document, page int) []domain.
 	doc.Find("#results .item").Each(func(_ int, s *goquery.Selection) {
 		title := text(s.Find(".title"))
 		artist := text(s.Find(".artist a"))
-		if title == "" || artist == "" {
+		if artist == "" {
+			artist = text(s.Find(".artist"))
+		}
+		link := playableLink(s.Find("a.link").AttrOr("href", ""))
+		if title == "" || artist == "" || link == "" {
 			return
 		}
 		song := domain.NewSong(
 			title,
 			artist,
 			absoluteURL(s.Find(".cover img").AttrOr("src", "")),
-			absoluteURL(s.Find("a.link").AttrOr("href", "")),
+			link,
 		)
 		results = append(results, domain.NewProviderResult(*song, p.Name(), rank, pagination))
 		rank++

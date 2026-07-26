@@ -56,15 +56,33 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	scored := ss.ranker.RankResults(results, query, ss.priorities)
 
 	n := ss.config.MaxResults
-	if n <= 0 || n > len(scored) {
+	if n <= 0 {
 		n = len(scored)
 	}
 
-	songs := make([]domain.Song, n)
-	for i := 0; i < n; i++ {
-		songs[i] = scored[i].Result.Song
+	// Never return empty / non-https links — iOS AVPlayer cannot play them.
+	songs := make([]domain.Song, 0, n)
+	for i := 0; i < len(scored) && len(songs) < n; i++ {
+		s := scored[i].Result.Song
+		s.Link = upgradeHTTPS(s.Link)
+		s.Image = upgradeHTTPS(s.Image)
+		if !strings.HasPrefix(s.Link, "https://") {
+			continue
+		}
+		songs = append(songs, s)
 	}
 	return domain.NewSearchResponse(songs, pickPagination(scored)), nil
+}
+
+func upgradeHTTPS(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "http://") {
+		return "https://" + strings.TrimPrefix(raw, "http://")
+	}
+	if strings.HasPrefix(raw, "//") {
+		return "https:" + raw
+	}
+	return raw
 }
 
 // collect waits for every provider in parallel; each is cancelled after searchTimeout (default 2s).

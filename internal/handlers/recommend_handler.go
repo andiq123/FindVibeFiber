@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andiq123/FindVibeFiber/internal/core/constants"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 	"github.com/andiq123/FindVibeFiber/internal/core/services"
@@ -437,7 +438,7 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 			}
 		}
 		// Don't cancel shared work if the first client disconnects mid-build.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 25*time.Second)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 30*time.Second)
 		defer cancel()
 
 		seed := lastfmPair{artist: artist, title: title}
@@ -964,10 +965,19 @@ func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, see
 	}
 	ch := make(chan slot, len(pairs))
 	var wg sync.WaitGroup
+	// Bound fan-out — unbounded parallel /search was flooding MuzJam/Mp3mn.
+	sem := make(chan struct{}, constants.DefaultResolveConcurrency)
 	for i, p := range pairs {
 		wg.Add(1)
 		go func(i int, p lastfmPair) {
 			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				ch <- slot{i: i}
+				return
+			}
 			song, ok := h.resolveOne(ctx, p, seed, false)
 			ch <- slot{i: i, song: song, ok: ok}
 		}(i, p)
@@ -1039,7 +1049,7 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 	var fallback domain.Song
 	for i := 0; i < n; i++ {
 		s := resp.Songs[i]
-		if songKey(s.Artist, s.Title) == seedKey {
+		if !playableResolveLink(s.Link) || songKey(s.Artist, s.Title) == seedKey {
 			continue
 		}
 		gotCore := coreTitle(s.Title)
@@ -1057,19 +1067,23 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 			fallback = s
 		}
 	}
-	if fallback.Link != "" {
+	if playableResolveLink(fallback.Link) {
 		return fallback, true
 	}
 	if strict {
 		return domain.Song{}, false
 	}
-	// Last: first result that isn't the seed song.
+	// Last: first playable result that isn't the seed song.
 	for _, s := range resp.Songs[:n] {
-		if songKey(s.Artist, s.Title) != seedKey {
+		if playableResolveLink(s.Link) && songKey(s.Artist, s.Title) != seedKey {
 			return s, true
 		}
 	}
 	return domain.Song{}, false
+}
+
+func playableResolveLink(link string) bool {
+	return strings.HasPrefix(strings.TrimSpace(link), "https://")
 }
 
 func isRemixy(title string) bool {

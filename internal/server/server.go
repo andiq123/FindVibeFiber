@@ -42,10 +42,15 @@ func NewServer(cfg config.ServerConfig) *Server {
 	app.Use(recover.New())
 	app.Use(compress.New())
 	app.Use(limiter.New(limiter.Config{
-		Max:        100,
+		Max:        180,
 		Expiration: time.Minute,
 		Next: func(c fiber.Ctx) bool {
-			return c.Path() == "/health" || strings.HasPrefix(c.Path(), "/health/")
+			path := c.Path()
+			// Health + high-churn mobile paths (vault cover backfill, typeahead).
+			return path == "/health" ||
+				strings.HasPrefix(path, "/health/") ||
+				path == "/cover" ||
+				path == "/suggest"
 		},
 		LimitReached: func(c fiber.Ctx) error {
 			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "too many requests"})
@@ -99,6 +104,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	}))
 	favorites.Patch("/:songId/lyrics", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Favorites.UpdateFavoriteLyrics(c)
+	}))
+	favorites.Patch("/:songId/link", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Favorites.UpdateFavoriteLink(c)
 	}))
 	favorites.Delete("/:songId", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Favorites.DeleteFavorite(c)

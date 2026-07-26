@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ type sourceSpec struct {
 	Name string `json:"name"`
 	Host string `json:"host"`
 	URL  string `json:"-"`
+	// requireMarkup — when set, body must contain one of these markers (search scrape path).
+	Markers [][]byte `json:"-"`
 }
 
 type sourceStatus struct {
@@ -24,8 +27,19 @@ type sourceStatus struct {
 }
 
 var musicSources = []sourceSpec{
-	{Name: "MuzJam", Host: "muzjam.org", URL: "https://muzjam.org/"},
-	{Name: "Mp3mn", Host: "mp3mn.net", URL: "https://mp3mn.net/"},
+	{
+		Name: "MuzJam",
+		Host: "muzjam.org",
+		// Probe the real scrape path — homepage <500 was a false positive.
+		URL:     "https://muzjam.org/search/test",
+		Markers: [][]byte{[]byte(`id="results"`), []byte(`class="item"`), []byte(`a.link`)},
+	},
+	{
+		Name:    "Mp3mn",
+		Host:    "mp3mn.net",
+		URL:     "https://mp3mn.net/",
+		Markers: nil, // homepage reachability only
+	},
 }
 
 type HealthHandler struct {
@@ -62,7 +76,9 @@ func (hh *HealthHandler) probe(s sourceSpec) sourceStatus {
 		st.Ms = time.Since(start).Milliseconds()
 		return st
 	}
-	req.Header.Set("User-Agent", "FindVibeHealth/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	resp, err := hh.client.Do(req)
 	st.Ms = time.Since(start).Milliseconds()
@@ -70,7 +86,20 @@ func (hh *HealthHandler) probe(s sourceSpec) sourceStatus {
 		return st
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
-	st.OK = resp.StatusCode > 0 && resp.StatusCode < 500
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return st
+	}
+	if len(s.Markers) == 0 {
+		st.OK = true
+		return st
+	}
+	for _, m := range s.Markers {
+		if bytes.Contains(body, m) {
+			st.OK = true
+			return st
+		}
+	}
 	return st
 }

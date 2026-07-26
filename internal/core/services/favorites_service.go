@@ -27,10 +27,26 @@ func (fs *FavoritesService) AddFavorite(ctx context.Context, userId string, song
 		return fmt.Errorf("add favorite: %w", err)
 	}
 	song.UserID = user.ID
+	song.Link = upgradeFavoriteURL(song.Link)
+	song.Image = upgradeFavoriteURL(song.Image)
+	if song.Link == "" || !strings.HasPrefix(song.Link, "https://") {
+		return fmt.Errorf("add favorite: %w", domain.ErrInvalidInput)
+	}
 	if err := fs.favoritesRepository.AddFavorite(ctx, userId, song); err != nil {
 		return fmt.Errorf("add favorite: %w", err)
 	}
 	return nil
+}
+
+func upgradeFavoriteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "http://") {
+		return "https://" + strings.TrimPrefix(raw, "http://")
+	}
+	if strings.HasPrefix(raw, "//") {
+		return "https:" + raw
+	}
+	return raw
 }
 
 func (fs *FavoritesService) DeleteFavorite(ctx context.Context, songId string) error {
@@ -49,7 +65,14 @@ func (fs *FavoritesService) GetFavorites(ctx context.Context, userId string) ([]
 }
 
 func (fs *FavoritesService) ReorderFavorites(ctx context.Context, songReorders []domain.ReorderRequest) error {
-	if err := fs.favoritesRepository.ReorderFavorites(ctx, songReorders); err != nil {
+	cleaned := make([]domain.ReorderRequest, 0, len(songReorders))
+	for _, r := range songReorders {
+		if strings.TrimSpace(r.SongId) == "" {
+			return fmt.Errorf("reorder favorites: %w", domain.ErrInvalidInput)
+		}
+		cleaned = append(cleaned, r)
+	}
+	if err := fs.favoritesRepository.ReorderFavorites(ctx, cleaned); err != nil {
 		return fmt.Errorf("reorder favorites: %w", err)
 	}
 	return nil
@@ -76,6 +99,18 @@ func (fs *FavoritesService) UpdateFavoriteLyrics(ctx context.Context, songId, ly
 	}
 	if err := fs.favoritesRepository.UpdateFavoriteLyrics(ctx, songId, lyrics); err != nil {
 		return fmt.Errorf("update favorite lyrics: %w", err)
+	}
+	return nil
+}
+
+func (fs *FavoritesService) UpdateFavoriteLink(ctx context.Context, songId, link string) error {
+	link = strings.TrimSpace(link)
+	// FavoriteSong.Link is varchar(1000); https-only matches stream playback.
+	if link == "" || len(link) > 1000 || !strings.HasPrefix(link, "https://") {
+		return domain.ErrInvalidInput
+	}
+	if err := fs.favoritesRepository.UpdateFavoriteLink(ctx, songId, link); err != nil {
+		return fmt.Errorf("update favorite link: %w", err)
 	}
 	return nil
 }

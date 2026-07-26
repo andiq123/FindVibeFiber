@@ -28,8 +28,8 @@ func TestSearchMergesAllProviders(t *testing.T) {
 	}
 
 	svc := NewSearchService([]ports.IMusicProvider{slow, fast}, domain.DefaultSearchConfig(), 0)
-	if svc.searchTimeout != 2*time.Second {
-		t.Fatalf("default timeout want 2s, got %v", svc.searchTimeout)
+	if svc.searchTimeout != 3*time.Second {
+		t.Fatalf("default timeout want 3s, got %v", svc.searchTimeout)
 	}
 	resp, err := svc.Search(context.Background(), "adele", 1)
 	if err != nil {

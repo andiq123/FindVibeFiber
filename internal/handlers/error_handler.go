@@ -8,23 +8,27 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+// HandleError maps domain errors to a stable JSON envelope for iOS/web.
+// Wrapped fmt.Errorf("…: %w", err) messages are unwrapped to the domain text.
 func HandleError(c fiber.Ctx, err error) error {
 	if err == nil {
 		return nil
 	}
 
-	statusCode := http.StatusInternalServerError
+	status := http.StatusInternalServerError
+	msg := "internal error"
 
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		statusCode = http.StatusNotFound
+		status = http.StatusNotFound
+		msg = domain.ErrNotFound.Error()
 	case errors.Is(err, domain.ErrAlreadyExists):
-		statusCode = http.StatusConflict
+		status = http.StatusConflict
+		msg = domain.ErrAlreadyExists.Error()
 	case errors.Is(err, domain.ErrInvalidInput):
-		statusCode = http.StatusBadRequest
+		status = http.StatusBadRequest
+		msg = domain.ErrInvalidInput.Error()
 	}
 
-	return c.Status(statusCode).JSON(fiber.Map{
-		"error": err.Error(),
-	})
+	return c.Status(status).JSON(fiber.Map{"error": msg})
 }

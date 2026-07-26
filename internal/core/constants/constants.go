@@ -15,17 +15,20 @@ const (
 	DefaultDBConnMaxIdleTime   = 10 // minutes
 
 	// Search Service Configuration
-	DefaultSearchTimeout   = 2 // seconds — drop slow providers, don't stall /search
+	DefaultSearchTimeout    = 3 // seconds — MuzJam is fast; Mp3mn needs a little headroom
 	DefaultMaxSearchResults = 20
 	DefaultMaxPageNumber    = 100
 	MaxQueryLength          = 200
 	MinQueryLength          = 1
 
+	// Concurrent Last.fm → /search resolves (explore/radio). Unbounded floods providers.
+	DefaultResolveConcurrency = 6
+
 	// Server Configuration
 	DefaultServerPort  = "8080"
-	DefaultReadTimeout = 10  // seconds
-	// Radio/lyrics cold paths can exceed 10s (Last.fm + resolve / LRCLIB).
-	DefaultWriteTimeout = 20 // seconds
+	DefaultReadTimeout = 15 // seconds
+	// Radio/lyrics cold paths: Last.fm + parallel resolve (must be ≥ recommend handler budget).
+	DefaultWriteTimeout = 35 // seconds
 	DefaultIdleTimeout  = 120 // seconds
 
 	// Request Limits

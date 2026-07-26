@@ -78,6 +78,10 @@ func (fr *FavoritesRepository) UpdateFavoriteLyrics(ctx context.Context, songId,
 	return fr.updateFavoriteField(ctx, songId, "lyrics", lyrics)
 }
 
+func (fr *FavoritesRepository) UpdateFavoriteLink(ctx context.Context, songId, link string) error {
+	return fr.updateFavoriteField(ctx, songId, "link", link)
+}
+
 // ponytail: don't use RowsAffected — Postgres reports 0 when value unchanged.
 func (fr *FavoritesRepository) updateFavoriteField(ctx context.Context, songId, column, value string) error {
 	var n int64
