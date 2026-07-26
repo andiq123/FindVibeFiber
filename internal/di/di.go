@@ -48,13 +48,14 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 	mp3pm := providers.NewMp3pmProvider(scrape.Client).UseRotator(scrape)
 	mp3mn := providers.NewMp3mnProvider(scrape.Client)
 	mp3mn.WithRotator(scrape)
+	musify := providers.NewMusifyProvider(scrape.Client).UseRotator(scrape)
 
 	searchConfig := domain.DefaultSearchConfig()
 	searchConfig.MaxResults = cfg.Search.MaxResults
 
 	covers := services.NewCoverService(httpClient)
 	searchSvc := services.NewSearchService(
-		[]ports.IMusicProvider{mp3pm, mp3mn},
+		[]ports.IMusicProvider{mp3pm, mp3mn, musify},
 		searchConfig,
 		cfg.Search.Timeout,
 	)

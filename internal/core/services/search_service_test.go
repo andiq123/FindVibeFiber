@@ -28,8 +28,8 @@ func TestSearchMergesAllProviders(t *testing.T) {
 	}
 
 	svc := NewSearchService([]ports.IMusicProvider{slow, fast}, domain.DefaultSearchConfig(), 0)
-	if svc.searchTimeout != 3*time.Second {
-		t.Fatalf("default timeout want 3s, got %v", svc.searchTimeout)
+	if svc.searchTimeout != 5*time.Second {
+		t.Fatalf("default timeout want 5s, got %v", svc.searchTimeout)
 	}
 	resp, err := svc.Search(context.Background(), "adele", 1)
 	if err != nil {
@@ -37,6 +37,32 @@ func TestSearchMergesAllProviders(t *testing.T) {
 	}
 	if len(resp.Songs) != 2 {
 		t.Fatalf("want 2 merged songs, got %d", len(resp.Songs))
+	}
+}
+
+func TestSearchFirstReturnsHighestPriorityProvider(t *testing.T) {
+	high := stubProvider{
+		name:     "Mp3pm",
+		priority: 8,
+		results: []domain.ProviderResult{
+			{Song: domain.Song{Title: "Hello", Artist: "Adele", Link: "https://pm.mp3"}, Provider: "Mp3pm", ProviderRank: 1},
+		},
+	}
+	low := stubProvider{
+		name:     "Mp3mn",
+		priority: 7,
+		delay:    50 * time.Millisecond,
+		results: []domain.ProviderResult{
+			{Song: domain.Song{Title: "Hello", Artist: "Adele", Link: "https://mn.mp3"}, Provider: "Mp3mn", ProviderRank: 1},
+		},
+	}
+	svc := NewSearchService([]ports.IMusicProvider{low, high}, domain.DefaultSearchConfig(), time.Second)
+	got, err := svc.SearchFirst(context.Background(), "adele hello", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Link != "https://pm.mp3" {
+		t.Fatalf("want Mp3pm first-wins, got %+v", got)
 	}
 }
 

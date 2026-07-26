@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -72,6 +73,62 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 		songs = append(songs, s)
 	}
 	return domain.NewSearchResponse(songs, pickPagination(scored)), nil
+}
+
+// SearchFirst walks providers by priority and returns as soon as one yields playable songs.
+// Used by explore/radio resolve — faster than waiting on a full multi-provider merge.
+func (ss *SearchService) SearchFirst(ctx context.Context, query string, limit int) ([]domain.Song, error) {
+	if len(ss.providers) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = recommendSearchPeekDefault
+	}
+
+	providers := append([]ports.IMusicProvider(nil), ss.providers...)
+	sort.SliceStable(providers, func(i, j int) bool {
+		return providers[i].Priority() > providers[j].Priority()
+	})
+
+	for _, p := range providers {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		pctx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
+		got, err := p.SearchWithPage(pctx, query, 1)
+		cancel()
+		if err != nil {
+			utils.GetLogger().Warn("provider search-first failed", "provider", p.Name(), "query", query, "error", err)
+			continue
+		}
+		if len(got) == 0 {
+			continue
+		}
+		songs := playableSongs(got, limit)
+		if len(songs) > 0 {
+			return songs, nil
+		}
+	}
+	return nil, nil
+}
+
+const recommendSearchPeekDefault = 8
+
+func playableSongs(results []domain.ProviderResult, limit int) []domain.Song {
+	songs := make([]domain.Song, 0, limit)
+	for i := range results {
+		if len(songs) >= limit {
+			break
+		}
+		s := results[i].Song
+		s.Link = upgradeHTTPS(s.Link)
+		s.Image = upgradeHTTPS(s.Image)
+		if !strings.HasPrefix(s.Link, "https://") {
+			continue
+		}
+		songs = append(songs, s)
+	}
+	return songs
 }
 
 func upgradeHTTPS(raw string) string {

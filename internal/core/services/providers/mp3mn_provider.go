@@ -2,15 +2,19 @@ package providers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 )
 
 const mp3mnOrigin = "https://mp3mn.net"
+
+var mp3mnPace = newPacer(100 * time.Millisecond)
 
 type Mp3mnProvider struct{ *BaseProvider }
 
@@ -22,6 +26,9 @@ func (p *Mp3mnProvider) SearchWithPage(ctx context.Context, query string, page i
 	// ponytail: site has no stable page>1
 	if page > 1 {
 		return nil, nil
+	}
+	if err := mp3mnPace.wait(ctx); err != nil {
+		return nil, fmt.Errorf("%s: %w", p.Name(), err)
 	}
 
 	apiURL := mp3mnOrigin + "/?" + url.Values{"song": {query}}.Encode()

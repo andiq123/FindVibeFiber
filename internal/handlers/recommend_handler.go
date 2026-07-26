@@ -41,7 +41,11 @@ const (
 	exploreFetch = 12
 	// One stuck chart must not block the rest of the stream.
 	exploreSectionBudget = 12 * time.Second
-	exploreStreamBudget  = 55 * time.Second
+	exploreCoverBudget   = 2500 * time.Millisecond
+	exploreStreamBudget  = 60 * time.Second
+
+	resolveTTL      = 15 * time.Minute
+	resolveCacheCap = 256
 )
 
 type recommendEntry struct {
@@ -52,6 +56,11 @@ type recommendEntry struct {
 type pairsEntry struct {
 	pairs []lastfmPair
 	at    time.Time
+}
+
+type resolveEntry struct {
+	song domain.Song
+	at   time.Time
 }
 
 type ExploreSection struct {
@@ -77,6 +86,7 @@ type RecommendHandler struct {
 	exploreMu       sync.Mutex
 	exploreSections []ExploreSection
 	exploreAt       time.Time
+	exploreSF       singleflight.Group
 
 	recommendMu    sync.Mutex
 	recommendCache map[string]recommendEntry
@@ -85,6 +95,9 @@ type RecommendHandler struct {
 	pairsCache map[string]pairsEntry
 	pairsSF    singleflight.Group
 	recommendSF singleflight.Group
+
+	resolveMu    sync.Mutex
+	resolveCache map[string]resolveEntry
 }
 
 func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearchService, covers *services.CoverService) *RecommendHandler {
@@ -92,6 +105,7 @@ func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearc
 		client: client, apiKey: apiKey, search: search, covers: covers,
 		recommendCache: make(map[string]recommendEntry),
 		pairsCache:     make(map[string]pairsEntry),
+		resolveCache:   make(map[string]resolveEntry),
 	}
 }
 
@@ -114,7 +128,9 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 		}
 	}
 
-	sections, err := h.buildExplore(c.Context(), nil)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), exploreStreamBudget)
+	defer cancel()
+	sections, err := h.coldExplore(ctx, refresh, nil)
 	if err != nil || len(sections) == 0 {
 		// Serve last good payload even past TTL — better than empty Explore.
 		if stale, ok := h.exploreSnap(false); ok {
@@ -125,10 +141,6 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 			return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't load charts"})
 		}
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "No playable charts right now"})
-	}
-	// ponytail: don't poison the 6h cache with a half-empty build
-	if len(sections) >= 2 {
-		h.exploreStore(sections)
 	}
 	c.Set("Cache-Control", "public, max-age=21600")
 	return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": false})
@@ -182,13 +194,24 @@ func (h *RecommendHandler) streamExplore(c fiber.Ctx, refresh bool) error {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), exploreStreamBudget)
 		defer cancel()
 
-		sections, err := h.buildExplore(ctx, func(sec ExploreSection) error {
+		// Leader streams shelves as they resolve; followers wait on singleflight then flush.
+		var streamed int
+		sections, err, shared := h.coldExploreShared(ctx, refresh, func(sec ExploreSection) error {
+			streamed++
 			if !write(exploreStreamEvent{Type: "section", Section: &sec}) {
 				return context.Canceled
 			}
 			return nil
 		})
-		if err != nil && len(sections) == 0 {
+		if shared {
+			for i := range sections {
+				sec := sections[i]
+				if !write(exploreStreamEvent{Type: "section", Section: &sec}) {
+					return
+				}
+			}
+		}
+		if err != nil && len(sections) == 0 && streamed == 0 {
 			if stale, ok := h.exploreSnap(false); ok {
 				for i := range stale {
 					sec := stale[i]
@@ -202,7 +225,7 @@ func (h *RecommendHandler) streamExplore(c fiber.Ctx, refresh bool) error {
 			_ = write(exploreStreamEvent{Type: "error", Error: "Couldn't load charts"})
 			return
 		}
-		if len(sections) == 0 {
+		if len(sections) == 0 && streamed == 0 {
 			if stale, ok := h.exploreSnap(false); ok {
 				for i := range stale {
 					sec := stale[i]
@@ -216,11 +239,35 @@ func (h *RecommendHandler) streamExplore(c fiber.Ctx, refresh bool) error {
 			_ = write(exploreStreamEvent{Type: "error", Error: "No playable charts right now"})
 			return
 		}
+		_ = write(exploreStreamEvent{Type: "done", Cached: boolPtr(false)})
+	})
+}
+
+// coldExplore builds chart shelves once per cold window (singleflight).
+func (h *RecommendHandler) coldExplore(ctx context.Context, refresh bool, onSection func(ExploreSection) error) ([]ExploreSection, error) {
+	sections, err, _ := h.coldExploreShared(ctx, refresh, onSection)
+	return sections, err
+}
+
+func (h *RecommendHandler) coldExploreShared(
+	ctx context.Context,
+	refresh bool,
+	onSection func(ExploreSection) error,
+) ([]ExploreSection, error, bool) {
+	key := "explore"
+	if refresh {
+		key = "explore-refresh"
+	}
+	v, err, shared := h.exploreSF.Do(key, func() (any, error) {
+		sections, err := h.buildExplore(ctx, onSection)
+		// ponytail: don't poison the 6h cache with a half-empty build
 		if len(sections) >= 2 {
 			h.exploreStore(sections)
 		}
-		_ = write(exploreStreamEvent{Type: "done", Cached: boolPtr(false)})
+		return sections, err
 	})
+	sections, _ := v.([]ExploreSection)
+	return sections, err, shared
 }
 
 type exploreJob struct {
@@ -267,21 +314,22 @@ func (h *RecommendHandler) buildExplore(ctx context.Context, onSection func(Expl
 			continue
 		}
 		songs := h.resolveN(sectionCtx, pairs, lastfmPair{}, exploreCap)
+		cancel()
 		if len(songs) == 0 {
-			cancel()
 			continue
 		}
-		h.covers.FillSongs(sectionCtx, songs)
-		cancel()
+		// Short cover budget after resolve — don't let iTunes eat the section timeout.
+		coverCtx, coverCancel := context.WithTimeout(context.WithoutCancel(ctx), exploreCoverBudget)
+		h.covers.FillSongs(coverCtx, songs)
+		coverCancel()
 
 		sec := ExploreSection{
 			ID: job.id, Title: job.title, Subtitle: job.subtitle, Songs: songs,
 		}
 		out = append(out, sec)
 		if onSection != nil {
-			if err := onSection(sec); err != nil {
-				return out, err
-			}
+			// Best-effort stream — a dropped client must not abort the shared cold build.
+			_ = onSection(sec)
 		}
 	}
 	if len(out) == 0 {
@@ -1145,8 +1193,19 @@ func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int) []
 }
 
 func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair, strict bool) (domain.Song, bool) {
-	resp, err := h.search.Search(ctx, want.artist+" "+want.title, 1)
-	if err != nil || resp == nil || len(resp.Songs) == 0 {
+	cacheKey := songKey(want.artist, want.title)
+	if strict {
+		cacheKey += "|strict"
+	}
+	if song, ok := h.resolveSnap(cacheKey); ok {
+		if seedKey := songKey(seed.artist, seed.title); seedKey == "" || songKey(song.Artist, song.Title) != seedKey {
+			return song, true
+		}
+	}
+
+	// First-wins by provider priority — explore/radio don't need a full merge.
+	songs, err := h.search.SearchFirst(ctx, want.artist+" "+want.title, recommendSearchPeek)
+	if err != nil || len(songs) == 0 {
 		return domain.Song{}, false
 	}
 
@@ -1154,13 +1213,13 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 	wantArt := utils.NormalizeString(want.artist)
 	seedKey := songKey(seed.artist, seed.title)
 	n := recommendSearchPeek
-	if n > len(resp.Songs) {
-		n = len(resp.Songs)
+	if n > len(songs) {
+		n = len(songs)
 	}
 
 	var fallback domain.Song
 	for i := 0; i < n; i++ {
-		s := resp.Songs[i]
+		s := songs[i]
 		if !playableResolveLink(s.Link) || songKey(s.Artist, s.Title) == seedKey {
 			continue
 		}
@@ -1169,6 +1228,7 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 		artistOK := art == wantArt || strings.Contains(art, wantArt) || strings.Contains(wantArt, art)
 		titleOK := gotCore == wantCore || strings.Contains(gotCore, wantCore) || strings.Contains(wantCore, gotCore)
 		if artistOK && titleOK && !isRemixy(s.Title) {
+			h.resolveStore(cacheKey, s)
 			return s, true
 		}
 		if artistOK && titleOK && fallback.Link == "" {
@@ -1180,18 +1240,55 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 		}
 	}
 	if playableResolveLink(fallback.Link) {
+		h.resolveStore(cacheKey, fallback)
 		return fallback, true
 	}
 	if strict {
 		return domain.Song{}, false
 	}
 	// Last: first playable result that isn't the seed song.
-	for _, s := range resp.Songs[:n] {
+	for _, s := range songs[:n] {
 		if playableResolveLink(s.Link) && songKey(s.Artist, s.Title) != seedKey {
+			h.resolveStore(cacheKey, s)
 			return s, true
 		}
 	}
 	return domain.Song{}, false
+}
+
+func (h *RecommendHandler) resolveSnap(key string) (domain.Song, bool) {
+	if key == "" {
+		return domain.Song{}, false
+	}
+	h.resolveMu.Lock()
+	defer h.resolveMu.Unlock()
+	e, ok := h.resolveCache[key]
+	if !ok || e.song.Link == "" || time.Since(e.at) > resolveTTL {
+		return domain.Song{}, false
+	}
+	return e.song, true
+}
+
+func (h *RecommendHandler) resolveStore(key string, song domain.Song) {
+	if key == "" || song.Link == "" {
+		return
+	}
+	h.resolveMu.Lock()
+	defer h.resolveMu.Unlock()
+	if h.resolveCache == nil {
+		h.resolveCache = make(map[string]resolveEntry)
+	}
+	if len(h.resolveCache) >= resolveCacheCap {
+		for k, e := range h.resolveCache {
+			if time.Since(e.at) > resolveTTL {
+				delete(h.resolveCache, k)
+			}
+		}
+		if len(h.resolveCache) >= resolveCacheCap {
+			h.resolveCache = make(map[string]resolveEntry, resolveCacheCap/2)
+		}
+	}
+	h.resolveCache[key] = resolveEntry{song: song, at: time.Now()}
 }
 
 func playableResolveLink(link string) bool {

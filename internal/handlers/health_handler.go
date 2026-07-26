@@ -40,6 +40,15 @@ var musicSources = []sourceSpec{
 		URL:     "https://mp3mn.net/",
 		Markers: nil, // homepage reachability only
 	},
+	{
+		Name: "Musify",
+		Host: "musify.club",
+		URL:  "https://musify.club/en/search?searchText=test&type=song",
+		Markers: [][]byte{
+			[]byte(`tracklist__row`),
+			[]byte(`data-url="/track/pl/`),
+		},
+	},
 }
 
 type HealthHandler struct {

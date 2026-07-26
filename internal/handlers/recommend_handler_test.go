@@ -20,6 +20,18 @@ func (s stubSearch) Search(_ context.Context, query string, _ int) (*domain.Sear
 	return domain.NewSearchResponse(nil, nil), nil
 }
 
+func (s stubSearch) SearchFirst(ctx context.Context, query string, limit int) ([]domain.Song, error) {
+	resp, err := s.Search(ctx, query, 1)
+	if err != nil || resp == nil {
+		return nil, err
+	}
+	songs := resp.Songs
+	if limit > 0 && len(songs) > limit {
+		songs = songs[:limit]
+	}
+	return songs, nil
+}
+
 func TestCoreTitleStripsRemixVariants(t *testing.T) {
 	a := coreTitle("Collide (Extended Mix)")
 	b := coreTitle("Collide feat Rosi Golan [Extended Mix]")
