@@ -32,7 +32,7 @@ func TestIsNotFoundAndBlockedErr(t *testing.T) {
 	if !isNotFoundStatus(errString("Mp3pm: status 404")) {
 		t.Fatal("404")
 	}
-	if !isBlockedErr(errString("Mp3musics: status 403 (blocked)")) {
+	if !isBlockedErr(errString("Musify: status 403 (blocked)")) {
 		t.Fatal("403 blocked")
 	}
 	if isBlockedErr(errString("Mp3pm: status 404")) || isNotFoundStatus(nil) {

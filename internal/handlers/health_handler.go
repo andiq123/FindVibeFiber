@@ -57,16 +57,6 @@ var musicSources = []sourceSpec{
 			[]byte(`/track/pl/`),
 		},
 	},
-	{
-		Name:    "Mp3musics",
-		Host:    "mp3musics.pro",
-		URL:     "https://mp3musics.pro/search.php?q=test",
-		Referer: "https://mp3musics.pro/",
-		Markers: [][]byte{
-			[]byte(`class="tc"`),
-			[]byte(`/file/`),
-		},
-	},
 }
 
 type HealthHandler struct {

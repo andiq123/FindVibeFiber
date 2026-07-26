@@ -94,9 +94,6 @@ func NewServer(cfg config.ServerConfig) *Server {
 	app.Get("/resolve", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Recommend.GetResolve(c)
 	}))
-	app.Get("/resolve/mp3musics", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
-		return h.Search.ResolveMp3musics(c)
-	}))
 	app.Get("/spotify/playlist", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Spotify.GetPlaylist(c)
 	}))
