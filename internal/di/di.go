@@ -37,21 +37,30 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		cfg.HTTP.IdleTimeout,
 	)
 
+	// Dedicated scrape client: cookie jar, HTTP/1.1, PROXY env + PROVIDER_PROXIES rotation.
+	scrape := utils.NewScrapeClient(
+		cfg.HTTP.Timeout,
+		cfg.HTTP.MaxIdleConns,
+		cfg.HTTP.MaxIdlePerHost,
+		cfg.HTTP.IdleTimeout,
+		utils.ParseProxyList(cfg.HTTP.ProviderProxies),
+	)
+	muzjam := providers.NewMuzJamProvider(scrape.Client).UseRotator(scrape)
+	mp3mn := providers.NewMp3mnProvider(scrape.Client)
+	mp3mn.WithRotator(scrape)
+
 	searchConfig := domain.DefaultSearchConfig()
 	searchConfig.MaxResults = cfg.Search.MaxResults
 
 	covers := services.NewCoverService(httpClient)
 	searchSvc := services.NewSearchService(
-		[]ports.IMusicProvider{
-			providers.NewMuzJamProvider(httpClient),
-			providers.NewMp3mnProvider(httpClient),
-		},
+		[]ports.IMusicProvider{muzjam, mp3mn},
 		searchConfig,
 		cfg.Search.Timeout,
 	)
 
 	return Handlers{
-		Health:      handlers.NewHealthHandler(httpClient),
+		Health:      handlers.NewHealthHandler(scrape.Client),
 		Auth:        handlers.NewAuthHandler(services.NewAuthService(authRepository)),
 		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),

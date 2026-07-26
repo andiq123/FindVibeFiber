@@ -15,7 +15,8 @@ const (
 	DefaultDBConnMaxIdleTime   = 10 // minutes
 
 	// Search Service Configuration
-	DefaultSearchTimeout    = 3 // seconds — MuzJam is fast; Mp3mn needs a little headroom
+	// Proxies + homepage warm-up need a bit more than a direct scrape.
+	DefaultSearchTimeout    = 5 // seconds
 	DefaultMaxSearchResults = 20
 	DefaultMaxPageNumber    = 100
 	MaxQueryLength          = 200

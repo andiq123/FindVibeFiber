@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
@@ -20,16 +22,32 @@ const (
 	muzjamSearch = muzjamOrigin + "/search/"
 )
 
-type MuzJamProvider struct{ *BaseProvider }
+// Soft outbound pace — bursty parallel resolve is what trips their edge.
+var muzjamPace = newPacer(180 * time.Millisecond)
+
+type MuzJamProvider struct {
+	*BaseProvider
+	warm sync.Once
+}
 
 func NewMuzJamProvider(client *http.Client) *MuzJamProvider {
 	return &MuzJamProvider{BaseProvider: NewBaseProvider("MuzJam", 8, client)}
+}
+
+// UseRotator enables proxy hop on 403/429/challenge pages.
+func (p *MuzJamProvider) UseRotator(r proxyRotator) *MuzJamProvider {
+	p.WithRotator(r)
+	return p
 }
 
 func (p *MuzJamProvider) SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error) {
 	if page < 1 {
 		page = 1
 	}
+	if err := muzjamPace.wait(ctx); err != nil {
+		return nil, fmt.Errorf("%s: %w", p.Name(), err)
+	}
+	p.ensureWarm(ctx)
 
 	apiURL := muzjamSearch + url.QueryEscape(query)
 	if page > 1 {
@@ -41,6 +59,15 @@ func (p *MuzJamProvider) SearchWithPage(ctx context.Context, query string, page 
 		return nil, err
 	}
 	return p.parseResults(doc, page), nil
+}
+
+func (p *MuzJamProvider) ensureWarm(ctx context.Context) {
+	p.warm.Do(func() {
+		// Single homepage hit (no proxy burn) — seed cookies before /search.
+		warmCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		defer cancel()
+		_, _, _ = p.doFetch(warmCtx, muzjamOrigin+"/", "")
+	})
 }
 
 func (p *MuzJamProvider) parseResults(doc *goquery.Document, page int) []domain.ProviderResult {
@@ -88,4 +115,34 @@ func (p *MuzJamProvider) pagination(doc *goquery.Document, page int) *domain.Pag
 	info.TotalPages = maxPage
 	info.HasNextPage = page < maxPage
 	return info
+}
+
+// pacer serializes bursts so parallel explore/radio resolves don't stampede MuzJam.
+type pacer struct {
+	mu     sync.Mutex
+	last   time.Time
+	minGap time.Duration
+}
+
+func newPacer(minGap time.Duration) *pacer {
+	return &pacer{minGap: minGap}
+}
+
+func (p *pacer) wait(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.last.IsZero() {
+		wait := p.minGap - time.Since(p.last)
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	p.last = time.Now()
+	return nil
 }

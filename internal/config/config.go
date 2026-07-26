@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/constants"
@@ -23,6 +24,9 @@ type HTTPConfig struct {
 	MaxIdleConns   int
 	MaxIdlePerHost int
 	IdleTimeout    time.Duration
+	// ProviderProxies — comma/newline list for MuzJam/Mp3mn scrape rotation.
+	// Also honors HTTP_PROXY / HTTPS_PROXY / ALL_PROXY via the scrape transport.
+	ProviderProxies string
 }
 
 type ServerConfig struct {
@@ -84,11 +88,21 @@ func databaseDSN() string {
 
 func loadHTTPConfig() HTTPConfig {
 	return HTTPConfig{
-		Timeout:        time.Duration(parseIntEnv("HTTP_TIMEOUT_SEC", constants.DefaultHTTPTimeout)) * time.Second,
-		MaxIdleConns:   parseIntEnv("HTTP_MAX_IDLE_CONNS", constants.DefaultHTTPMaxIdleConns),
-		MaxIdlePerHost: parseIntEnv("HTTP_MAX_IDLE_PER_HOST", constants.DefaultHTTPMaxIdlePerHost),
-		IdleTimeout:    time.Duration(parseIntEnv("HTTP_IDLE_TIMEOUT_SEC", constants.DefaultHTTPIdleTimeout)) * time.Second,
+		Timeout:         time.Duration(parseIntEnv("HTTP_TIMEOUT_SEC", constants.DefaultHTTPTimeout)) * time.Second,
+		MaxIdleConns:    parseIntEnv("HTTP_MAX_IDLE_CONNS", constants.DefaultHTTPMaxIdleConns),
+		MaxIdlePerHost:  parseIntEnv("HTTP_MAX_IDLE_PER_HOST", constants.DefaultHTTPMaxIdlePerHost),
+		IdleTimeout:     time.Duration(parseIntEnv("HTTP_IDLE_TIMEOUT_SEC", constants.DefaultHTTPIdleTimeout)) * time.Second,
+		ProviderProxies: firstNonEmpty(os.Getenv("PROVIDER_PROXIES"), os.Getenv("MUZJAM_PROXIES")),
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func loadServerConfig() ServerConfig {
