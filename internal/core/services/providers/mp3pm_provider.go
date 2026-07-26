@@ -61,6 +61,10 @@ func (p *Mp3pmProvider) SearchWithPage(ctx context.Context, query string, page i
 
 	doc, err := p.fetchDocument(ctx, listURL, mp3pmOrigin+"/")
 	if err != nil {
+		// Missing slug pages are normal misses (search API often 404s → fallback host 404).
+		if isNotFoundStatus(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return p.parseResults(doc, page), nil

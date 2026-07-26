@@ -7,6 +7,19 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
+func TestMp3musicsSlug(t *testing.T) {
+	if got := mp3musicsSlug("Olson Siu"); got != "olson-siu" {
+		t.Fatalf("got %q", got)
+	}
+	if got := mp3musicsSlug("olson siu eu vin în sat"); got != "olson-siu-eu-vin-in-sat" {
+		t.Fatalf("diacritic slug: %q", got)
+	}
+	urls := mp3musicsSearchURLs("olson siu")
+	if len(urls) < 2 || !strings.Contains(urls[0], "/mp3/olson-siu") {
+		t.Fatalf("urls: %#v", urls)
+	}
+}
+
 func TestYoutubeIDFromMp3musicsFile(t *testing.T) {
 	// hex("MI2qLjle5ug|86e7b5c2")
 	id, ok := youtubeIDFromMp3musicsFile("/file/4d4932714c6a6c653575677c3836653762356332")

@@ -27,3 +27,19 @@ func TestIsBlockedStatus(t *testing.T) {
 		t.Fatal("status mapping wrong")
 	}
 }
+
+func TestIsNotFoundAndBlockedErr(t *testing.T) {
+	if !isNotFoundStatus(errString("Mp3pm: status 404")) {
+		t.Fatal("404")
+	}
+	if !isBlockedErr(errString("Mp3musics: status 403 (blocked)")) {
+		t.Fatal("403 blocked")
+	}
+	if isBlockedErr(errString("Mp3pm: status 404")) || isNotFoundStatus(nil) {
+		t.Fatal("cross-check")
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }

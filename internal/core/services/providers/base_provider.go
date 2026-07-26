@@ -135,6 +135,21 @@ func isBlockedStatus(code int) bool {
 	}
 }
 
+func isNotFoundStatus(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "status 404")
+}
+
+func isBlockedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "(blocked)") || strings.Contains(msg, "blocked or challenge")
+}
+
 func isBlockedBody(body []byte) bool {
 	if len(body) == 0 {
 		return false

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -120,7 +121,9 @@ func (ss *SearchService) SearchFirst(ctx context.Context, query string, limit in
 		got, err := p.SearchWithPage(pctx, text, 1)
 		cancel()
 		if err != nil {
-			utils.GetLogger().Warn("provider search-first failed", "provider", p.Name(), "query", text, "error", err)
+			if !isBenignSearchErr(err) {
+				utils.GetLogger().Warn("provider search-first failed", "provider", p.Name(), "query", text, "error", err)
+			}
 			continue
 		}
 		if len(got) == 0 {
@@ -177,7 +180,9 @@ func (ss *SearchService) collect(ctx context.Context, q ParsedSearchQuery, page 
 			got, err := searchProvider(pctx, p, q, page)
 			if err != nil {
 				// timeout / cancel → skip that source; others still merge
-				utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", q.Text, "error", err)
+				if !isBenignSearchErr(err) {
+					utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", q.Text, "error", err)
+				}
 				ch <- nil
 				return
 			}
@@ -275,4 +280,8 @@ func pickPagination(scored []ScoredResult) *domain.PaginationInfo {
 		}
 	}
 	return nil
+}
+
+func isBenignSearchErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

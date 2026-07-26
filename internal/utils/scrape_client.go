@@ -44,15 +44,19 @@ func (c *ScrapeClient) Rotate() {
 	if c == nil {
 		return
 	}
+	hadProxy := c.Pool != nil && c.Pool.Len() > 0
 	if c.Pool != nil {
 		c.Pool.MarkBad()
 	}
 	if c.rt != nil {
 		c.rt.invalidateSticky()
 	}
-	// Cookies are IP/session-bound — drop them when egress changes.
-	if jar, err := cookiejar.New(nil); err == nil {
-		c.Jar = jar
+	// Cookies are IP/session-bound — only drop them when egress actually changes.
+	// Clearing the jar on a direct-only client makes 403 loops worse (loses _vt etc.).
+	if hadProxy {
+		if jar, err := cookiejar.New(nil); err == nil {
+			c.Jar = jar
+		}
 	}
 }
 
@@ -80,10 +84,10 @@ type rotatingTransport struct {
 	maxIdlePerHost int
 	idleTimeout    time.Duration
 
-	mu      sync.Mutex
-	sticky  string
-	cached  map[string]*http.Transport
-	direct  *http.Transport
+	mu     sync.Mutex
+	sticky string
+	cached map[string]*http.Transport
+	direct *http.Transport
 }
 
 func newRotatingTransport(pool *ProxyPool, maxIdleConns, maxIdlePerHost int, idleTimeout time.Duration) *rotatingTransport {

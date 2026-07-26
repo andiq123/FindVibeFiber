@@ -8,8 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
@@ -20,12 +23,19 @@ const (
 	mp3musicsStreamAPI = "https://ytsapi.cc/hsl.php"
 )
 
-var mp3musicsPace = newPacer(150 * time.Millisecond)
+var (
+	mp3musicsPace      = newPacer(150 * time.Millisecond)
+	mp3musicsSlugClean = regexp.MustCompile(`[^a-z0-9]+`)
+)
 
 // Mp3musicsProvider scrapes https://mp3musics.pro (YouTube→MP3 front).
 // Search returns durable /file/{hex} links (hex = youtubeId|checksum).
 // Clients (or ResolveFile) turn those into a playable stream via ytsapi.cc — same as their web player.
-type Mp3musicsProvider struct{ *BaseProvider }
+type Mp3musicsProvider struct {
+	*BaseProvider
+	warmMu sync.Mutex
+	warmed time.Time
+}
 
 func NewMp3musicsProvider(client *http.Client) *Mp3musicsProvider {
 	return &Mp3musicsProvider{BaseProvider: NewBaseProvider("Mp3musics", 5, client)}
@@ -51,10 +61,27 @@ func (p *Mp3musicsProvider) SearchWithPage(ctx context.Context, query string, pa
 		return nil, fmt.Errorf("%s: %w", p.Name(), err)
 	}
 
-	searchURL := mp3musicsOrigin + "/search.php?" + url.Values{"q": {query}}.Encode()
-	doc, err := p.fetchDocument(ctx, searchURL, mp3musicsOrigin+"/")
-	if err != nil {
-		return nil, err
+	p.ensureWarm(ctx)
+
+	// Prefer /mp3/{slug} (search.php 302 target) — less bot friction than hitting search.php cold.
+	var doc *goquery.Document
+	var lastErr error
+	for _, u := range mp3musicsSearchURLs(query) {
+		doc, lastErr = p.fetchDocument(ctx, u, mp3musicsOrigin+"/")
+		if lastErr == nil {
+			break
+		}
+		// Soft miss — try next URL shape.
+		if isNotFoundStatus(lastErr) {
+			continue
+		}
+	}
+	if lastErr != nil {
+		// Datacenter IPs often get 403; treat as soft miss so search merge continues.
+		if isNotFoundStatus(lastErr) || isBlockedErr(lastErr) {
+			return nil, nil
+		}
+		return nil, lastErr
 	}
 
 	hits := parseMp3musicsHits(doc)
@@ -66,11 +93,47 @@ func (p *Mp3musicsProvider) SearchWithPage(ctx context.Context, query string, pa
 	return results, nil
 }
 
+func mp3musicsSearchURLs(query string) []string {
+	out := make([]string, 0, 2)
+	if slug := mp3musicsSlug(query); slug != "" {
+		out = append(out, mp3musicsOrigin+"/mp3/"+slug)
+	}
+	out = append(out, mp3musicsOrigin+"/search.php?"+url.Values{"q": {query}}.Encode())
+	return out
+}
+
+func mp3musicsSlug(query string) string {
+	var b strings.Builder
+	b.Grow(len(query))
+	for _, r := range strings.ToLower(strings.TrimSpace(query)) {
+		if mapped, ok := mp3musicsFold[r]; ok {
+			b.WriteString(mapped)
+			continue
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case unicode.IsSpace(r) || r == '-' || r == '_' || r == '.':
+			b.WriteByte('-')
+		default:
+			b.WriteByte('-')
+		}
+	}
+	slug := mp3musicsSlugClean.ReplaceAllString(b.String(), "-")
+	return strings.Trim(slug, "-")
+}
+
+// Fold diacritics the way mp3musics.pro builds /mp3/{slug} paths (în → in).
+var mp3musicsFold = map[rune]string{
+	'ă': "a", 'â': "a", 'î': "i", 'ș': "s", 'ş': "s", 'ț': "t", 'ţ': "t",
+	'á': "a", 'à': "a", 'ä': "a", 'é': "e", 'è': "e", 'ê': "e",
+	'í': "i", 'ì': "i", 'ó': "o", 'ò': "o", 'ö': "o", 'ú': "u", 'ù': "u", 'ü': "u",
+}
+
 // ResolveFile turns /file/{hex} (or bare hex) into a short-lived HTTPS audio URL.
 func (p *Mp3musicsProvider) ResolveFile(ctx context.Context, fileRef string) (string, error) {
 	ytID, ok := youtubeIDFromMp3musicsFile(fileRef)
 	if !ok {
-		// bare hex
 		ytID, ok = youtubeIDFromMp3musicsFile("/file/" + strings.TrimPrefix(strings.TrimSpace(fileRef), "/file/"))
 	}
 	if !ok {
@@ -84,8 +147,23 @@ func (p *Mp3musicsProvider) ResolveFile(ctx context.Context, fileRef string) (st
 	return p.resolveStream(ctx, apiHash, ytID)
 }
 
+func (p *Mp3musicsProvider) ensureWarm(ctx context.Context) {
+	p.warmMu.Lock()
+	defer p.warmMu.Unlock()
+	if time.Since(p.warmed) < 10*time.Minute {
+		return
+	}
+	// Homepage sets _vt cookie used by later search/slug requests.
+	_, _ = p.fetchDocument(ctx, mp3musicsOrigin+"/", "")
+	p.warmed = time.Now()
+}
+
 func (p *Mp3musicsProvider) fetchAPIHash(ctx context.Context) (string, error) {
-	doc, err := p.fetchDocument(ctx, mp3musicsOrigin+"/search.php?q=a", mp3musicsOrigin+"/")
+	p.ensureWarm(ctx)
+	doc, err := p.fetchDocument(ctx, mp3musicsOrigin+"/mp3/a", mp3musicsOrigin+"/")
+	if err != nil {
+		doc, err = p.fetchDocument(ctx, mp3musicsOrigin+"/", "")
+	}
 	if err != nil {
 		return "", err
 	}
