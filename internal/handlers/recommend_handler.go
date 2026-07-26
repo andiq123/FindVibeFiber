@@ -313,7 +313,7 @@ func (h *RecommendHandler) buildExplore(ctx context.Context, onSection func(Expl
 			cancel()
 			continue
 		}
-		songs := h.resolveN(sectionCtx, pairs, lastfmPair{}, exploreCap)
+		songs := h.resolveN(sectionCtx, pairs, lastfmPair{}, exploreCap, false)
 		cancel()
 		if len(songs) == 0 {
 			continue
@@ -545,7 +545,7 @@ func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and title required"})
 	}
 	strict := c.Query("strict") == "1" || strings.EqualFold(c.Query("strict"), "true")
-	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{}, strict)
+	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{}, strict, false)
 	if !ok {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
 	}
@@ -590,8 +590,12 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 		}
 	}
 
-	// Singleflight per result key — concurrent start/extend don't stampede resolve.
-	v, err, _ := h.recommendSF.Do(key, func() (any, error) {
+	// Refresh uses a distinct SF key so it never joins a non-refresh flight serving cache.
+	sfKey := key
+	if refresh {
+		sfKey = key + "|refresh"
+	}
+	v, err, _ := h.recommendSF.Do(sfKey, func() (any, error) {
 		if !refresh {
 			if songs, ok := h.recommendSnap(key); ok {
 				return songs, nil
@@ -603,7 +607,7 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 
 		seed := lastfmPair{artist: artist, title: title}
 		artists := artistCandidates(artist)
-		pairs, err := h.pairsFor(ctx, seed, artists, radio)
+		pairs, err := h.pairsFor(ctx, seed, artists, radio, refresh)
 		if err != nil {
 			return nil, err
 		}
@@ -612,7 +616,7 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 			pairs = append(pairs[off:], pairs[:off]...)
 		}
 
-		songs := h.resolveN(ctx, pairs, seed, capN)
+		songs := h.resolveN(ctx, pairs, seed, capN, refresh)
 		// ponytail: Last.fm often misses collab credits — fall back to our search by artist name.
 		if len(songs) == 0 {
 			songs = h.searchFallback(ctx, artists, seed)
@@ -645,7 +649,8 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 var errRecommendEmpty = fmt.Errorf("recommend empty")
 
 // pairsFor returns Last.fm neighborhood for a seed; cached across radio offsets.
-func (h *RecommendHandler) pairsFor(ctx context.Context, seed lastfmPair, artists []string, radio bool) ([]lastfmPair, error) {
+// refresh skips the pairs cache so Explore pull-to-refresh can recompute.
+func (h *RecommendHandler) pairsFor(ctx context.Context, seed lastfmPair, artists []string, radio, refresh bool) ([]lastfmPair, error) {
 	pk := songKey(seed.artist, seed.title)
 	if pk == "" {
 		return h.collectPairs(ctx, seed, artists, radio)
@@ -654,6 +659,14 @@ func (h *RecommendHandler) pairsFor(ctx context.Context, seed lastfmPair, artist
 		pk += "|radio"
 	} else {
 		pk += "|rec"
+	}
+	if refresh {
+		pairs, err := h.collectPairs(ctx, seed, artists, radio)
+		if err != nil {
+			return nil, err
+		}
+		h.pairsStore(pk, pairs)
+		return pairs, nil
 	}
 	v, err, _ := h.pairsSF.Do(pk, func() (any, error) {
 		if pairs, ok := h.pairsSnap(pk); ok {
@@ -1104,10 +1117,10 @@ func coreTitle(title string) string {
 }
 
 func (h *RecommendHandler) resolve(ctx context.Context, pairs []lastfmPair, seed lastfmPair) []domain.Song {
-	return h.resolveN(ctx, pairs, seed, recommendResolveCap)
+	return h.resolveN(ctx, pairs, seed, recommendResolveCap, false)
 }
 
-func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, seed lastfmPair, cap int) []domain.Song {
+func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, seed lastfmPair, cap int, bypassCache bool) []domain.Song {
 	if cap < 1 {
 		cap = recommendResolveCap
 	}
@@ -1138,7 +1151,7 @@ func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, see
 				ch <- slot{i: i}
 				return
 			}
-			song, ok := h.resolveOne(ctx, p, seed, false)
+			song, ok := h.resolveOne(ctx, p, seed, false, bypassCache)
 			ch <- slot{i: i, song: song, ok: ok}
 		}(i, p)
 	}
@@ -1192,14 +1205,16 @@ func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int) []
 	return out
 }
 
-func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair, strict bool) (domain.Song, bool) {
+func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair, strict, bypassCache bool) (domain.Song, bool) {
 	cacheKey := songKey(want.artist, want.title)
 	if strict {
 		cacheKey += "|strict"
 	}
-	if song, ok := h.resolveSnap(cacheKey); ok {
-		if seedKey := songKey(seed.artist, seed.title); seedKey == "" || songKey(song.Artist, song.Title) != seedKey {
-			return song, true
+	if !bypassCache {
+		if song, ok := h.resolveSnap(cacheKey); ok {
+			if seedKey := songKey(seed.artist, seed.title); seedKey == "" || songKey(song.Artist, song.Title) != seedKey {
+				return song, true
+			}
 		}
 	}
 

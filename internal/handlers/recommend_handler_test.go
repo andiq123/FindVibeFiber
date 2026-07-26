@@ -172,10 +172,10 @@ func TestResolveStrictRejectsWeakHits(t *testing.T) {
 		}},
 	}
 	want := lastfmPair{"Nero", "Collide"}
-	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, true); ok {
+	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, true, false); ok {
 		t.Fatal("strict should reject artist-only / wrong-title hit")
 	}
-	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false)
+	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false, false)
 	if !ok || got.Link != "https://wrong.mp3" {
 		t.Fatalf("loose still accepts first hit, got %+v ok=%v", got, ok)
 	}

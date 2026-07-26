@@ -19,12 +19,8 @@ var musifyPace = newPacer(120 * time.Millisecond)
 
 // MusifyProvider scrapes https://musify.club/en/search
 // Tracks: .tracklist__row.playlist__item with data-artist/data-name + [data-url]=/track/pl/….mp3
-// Optional year filters (yearFrom / yearTo) — wired on the URL builder; search UI later.
-type MusifyProvider struct {
-	*BaseProvider
-	yearFrom int
-	yearTo   int
-}
+// Year filters via SearchWithPageYears (yearFrom / yearTo query params).
+type MusifyProvider struct{ *BaseProvider }
 
 func NewMusifyProvider(client *http.Client) *MusifyProvider {
 	return &MusifyProvider{BaseProvider: NewBaseProvider("Musify", 6, client)}
@@ -35,13 +31,11 @@ func (p *MusifyProvider) UseRotator(r proxyRotator) *MusifyProvider {
 	return p
 }
 
-// WithYearRange sets optional release-year bounds (0 = unset). For upcoming search filters.
-func (p *MusifyProvider) WithYearRange(from, to int) *MusifyProvider {
-	p.yearFrom, p.yearTo = from, to
-	return p
+func (p *MusifyProvider) SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error) {
+	return p.SearchWithPageYears(ctx, query, page, 0, 0)
 }
 
-func (p *MusifyProvider) SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error) {
+func (p *MusifyProvider) SearchWithPageYears(ctx context.Context, query string, page, yearFrom, yearTo int) ([]domain.ProviderResult, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -53,14 +47,14 @@ func (p *MusifyProvider) SearchWithPage(ctx context.Context, query string, page 
 		return nil, fmt.Errorf("%s: %w", p.Name(), err)
 	}
 
-	doc, err := p.fetchDocument(ctx, p.searchURL(query, page), musifyOrigin+"/en/")
+	doc, err := p.fetchDocument(ctx, musifySearchURL(query, page, yearFrom, yearTo), musifyOrigin+"/en/")
 	if err != nil {
 		return nil, err
 	}
 	return p.parseResults(doc, page), nil
 }
 
-func (p *MusifyProvider) searchURL(query string, page int) string {
+func musifySearchURL(query string, page, yearFrom, yearTo int) string {
 	q := url.Values{
 		"searchText": {query},
 		"type":       {"song"},
@@ -68,11 +62,11 @@ func (p *MusifyProvider) searchURL(query string, page int) string {
 	if page > 1 {
 		q.Set("page", strconv.Itoa(page))
 	}
-	if p.yearFrom > 0 {
-		q.Set("yearFrom", strconv.Itoa(p.yearFrom))
+	if yearFrom > 0 {
+		q.Set("yearFrom", strconv.Itoa(yearFrom))
 	}
-	if p.yearTo > 0 {
-		q.Set("yearTo", strconv.Itoa(p.yearTo))
+	if yearTo > 0 {
+		q.Set("yearTo", strconv.Itoa(yearTo))
 	}
 	return musifyOrigin + "/en/search?" + q.Encode()
 }

@@ -52,8 +52,7 @@ func TestMusifyParseResults(t *testing.T) {
 }
 
 func TestMusifySearchURLYearFilters(t *testing.T) {
-	p := NewMusifyProvider(nil).WithYearRange(2020, 2024)
-	u := p.searchURL("skrillex", 2)
+	u := musifySearchURL("skrillex", 2, 2020, 2024)
 	if !strings.Contains(u, "searchText=skrillex") || !strings.Contains(u, "type=song") {
 		t.Fatalf("base query missing: %s", u)
 	}

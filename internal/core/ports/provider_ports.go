@@ -11,3 +11,8 @@ type IMusicProvider interface {
 	SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error)
 	Priority() int
 }
+
+// YearFilterProvider can apply release-year bounds (e.g. Musify yearFrom/yearTo).
+type YearFilterProvider interface {
+	SearchWithPageYears(ctx context.Context, query string, page, yearFrom, yearTo int) ([]domain.ProviderResult, error)
+}

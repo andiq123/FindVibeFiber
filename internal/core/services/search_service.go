@@ -47,14 +47,28 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
 
+	parsed := ParseSearchQuery(query)
+	if parsed.Text == "" {
+		return domain.NewSearchResponse([]domain.Song{}, nil), nil
+	}
+
+	// Year tokens only apply on Musify — skip unfiltered sources so results stay honest.
+	providers := ss.providers
+	if parsed.HasYearFilter() {
+		providers = yearFilterProviders(ss.providers)
+		if len(providers) == 0 {
+			return domain.NewSearchResponse([]domain.Song{}, nil), nil
+		}
+	}
+
 	// ponytail: one /search — fetch every provider, merge, dedupe, rank (no first-wins race).
-	results := ss.collect(ctx, query, page)
+	results := ss.collect(ctx, parsed, page, providers)
 	if len(results) == 0 {
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
 
 	results = dedupe(results)
-	scored := ss.ranker.RankResults(results, query, ss.priorities)
+	scored := ss.ranker.RankResults(results, parsed.Text, ss.priorities)
 
 	n := ss.config.MaxResults
 	if n <= 0 {
@@ -85,6 +99,14 @@ func (ss *SearchService) SearchFirst(ctx context.Context, query string, limit in
 		limit = recommendSearchPeekDefault
 	}
 
+	text := ParseSearchQuery(query).Text
+	if text == "" {
+		text = strings.TrimSpace(query)
+	}
+	if text == "" {
+		return nil, nil
+	}
+
 	providers := append([]ports.IMusicProvider(nil), ss.providers...)
 	sort.SliceStable(providers, func(i, j int) bool {
 		return providers[i].Priority() > providers[j].Priority()
@@ -95,10 +117,10 @@ func (ss *SearchService) SearchFirst(ctx context.Context, query string, limit in
 			return nil, err
 		}
 		pctx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
-		got, err := p.SearchWithPage(pctx, query, 1)
+		got, err := p.SearchWithPage(pctx, text, 1)
 		cancel()
 		if err != nil {
-			utils.GetLogger().Warn("provider search-first failed", "provider", p.Name(), "query", query, "error", err)
+			utils.GetLogger().Warn("provider search-first failed", "provider", p.Name(), "query", text, "error", err)
 			continue
 		}
 		if len(got) == 0 {
@@ -143,19 +165,19 @@ func upgradeHTTPS(raw string) string {
 }
 
 // collect waits for every provider in parallel; each is cancelled after searchTimeout (default 2s).
-func (ss *SearchService) collect(ctx context.Context, query string, page int) []domain.ProviderResult {
-	n := len(ss.providers)
+func (ss *SearchService) collect(ctx context.Context, q ParsedSearchQuery, page int, providers []ports.IMusicProvider) []domain.ProviderResult {
+	n := len(providers)
 	ch := make(chan []domain.ProviderResult, n)
 
-	for _, p := range ss.providers {
+	for _, p := range providers {
 		go func(p ports.IMusicProvider) {
 			pctx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
 			defer cancel()
 
-			got, err := p.SearchWithPage(pctx, query, page)
+			got, err := searchProvider(pctx, p, q, page)
 			if err != nil {
 				// timeout / cancel → skip that source; others still merge
-				utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", query, "error", err)
+				utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", q.Text, "error", err)
 				ch <- nil
 				return
 			}
@@ -167,6 +189,26 @@ func (ss *SearchService) collect(ctx context.Context, query string, page int) []
 	for range n {
 		if got := <-ch; len(got) > 0 {
 			out = append(out, got...)
+		}
+	}
+	return out
+}
+
+func searchProvider(ctx context.Context, p ports.IMusicProvider, q ParsedSearchQuery, page int) ([]domain.ProviderResult, error) {
+	if q.HasYearFilter() {
+		if yf, ok := p.(ports.YearFilterProvider); ok {
+			return yf.SearchWithPageYears(ctx, q.Text, page, q.YearFrom, q.YearTo)
+		}
+		return nil, nil
+	}
+	return p.SearchWithPage(ctx, q.Text, page)
+}
+
+func yearFilterProviders(all []ports.IMusicProvider) []ports.IMusicProvider {
+	out := make([]ports.IMusicProvider, 0, len(all))
+	for _, p := range all {
+		if _, ok := p.(ports.YearFilterProvider); ok {
+			out = append(out, p)
 		}
 	}
 	return out
