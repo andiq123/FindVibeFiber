@@ -11,11 +11,16 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+// Musify search HTML puts track rows after a large <head> (~75KB+). Read past that
+// so marker checks match the real scrape path (providers use up to 1MiB).
+const healthBodyLimit = 512 << 10
+
 type sourceSpec struct {
-	Name string `json:"name"`
-	Host string `json:"host"`
-	URL  string `json:"-"`
-	// requireMarkup — when set, body must contain one of these markers (search scrape path).
+	Name    string `json:"name"`
+	Host    string `json:"host"`
+	URL     string `json:"-"`
+	Referer string `json:"-"`
+	// Markers — OK if the body contains any one (search scrape path).
 	Markers [][]byte `json:"-"`
 }
 
@@ -30,9 +35,11 @@ var musicSources = []sourceSpec{
 	{
 		Name: "Mp3pm",
 		Host: "mp3.pm",
-		// Result list markup used by the scrape path.
-		URL:     "https://mp3.pm/",
-		Markers: [][]byte{[]byte(`cplayer-sound-item`), []byte(`data-sound-url`)},
+		URL:  "https://mp3.pm/",
+		Markers: [][]byte{
+			[]byte(`cplayer-sound-item`),
+			[]byte(`data-sound-url`),
+		},
 	},
 	{
 		Name:    "Mp3mn",
@@ -41,12 +48,13 @@ var musicSources = []sourceSpec{
 		Markers: nil, // homepage reachability only
 	},
 	{
-		Name: "Musify",
-		Host: "musify.club",
-		URL:  "https://musify.club/en/search?searchText=test&type=song",
+		Name:    "Musify",
+		Host:    "musify.club",
+		URL:     "https://musify.club/en/search?searchText=test&type=song",
+		Referer: "https://musify.club/en/",
 		Markers: [][]byte{
 			[]byte(`tracklist__row`),
-			[]byte(`data-url="/track/pl/`),
+			[]byte(`/track/pl/`),
 		},
 	},
 }
@@ -77,7 +85,7 @@ func (hh *HealthHandler) probe(s sourceSpec) sourceStatus {
 	st := sourceStatus{Name: s.Name, Host: s.Host}
 	start := time.Now()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL, nil)
@@ -85,9 +93,12 @@ func (hh *HealthHandler) probe(s sourceSpec) sourceStatus {
 		st.Ms = time.Since(start).Milliseconds()
 		return st
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	if s.Referer != "" {
+		req.Header.Set("Referer", s.Referer)
+	}
 
 	resp, err := hh.client.Do(req)
 	st.Ms = time.Since(start).Milliseconds()
@@ -96,7 +107,7 @@ func (hh *HealthHandler) probe(s sourceSpec) sourceStatus {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, healthBodyLimit))
 	if resp.StatusCode != http.StatusOK {
 		return st
 	}
