@@ -49,13 +49,14 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 	mp3mn := providers.NewMp3mnProvider(scrape.Client)
 	mp3mn.WithRotator(scrape)
 	musify := providers.NewMusifyProvider(scrape.Client).UseRotator(scrape)
+	mp3musics := providers.NewMp3musicsProvider(scrape.Client).UseRotator(scrape)
 
 	searchConfig := domain.DefaultSearchConfig()
 	searchConfig.MaxResults = cfg.Search.MaxResults
 
 	covers := services.NewCoverService(httpClient)
 	searchSvc := services.NewSearchService(
-		[]ports.IMusicProvider{mp3pm, mp3mn, musify},
+		[]ports.IMusicProvider{mp3pm, mp3mn, musify, mp3musics},
 		searchConfig,
 		cfg.Search.Timeout,
 	)
@@ -66,7 +67,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Favorites:   handlers.NewFavoritesHandler(services.NewFavoritesService(favoritesRepository, authRepository)),
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
 		Cover:       handlers.NewCoverHandler(covers),
-		Search:      handlers.NewSearchHandler(searchSvc, covers),
+		Search:      handlers.NewSearchHandler(searchSvc, covers, mp3musics),
 		Recommend:   handlers.NewRecommendHandler(httpClient, os.Getenv("LASTFM_API_KEY"), searchSvc, covers),
 		Lyrics:      handlers.NewLyricsHandler(httpClient),
 		Spotify:     handlers.NewSpotifyHandler(httpClient),
