@@ -28,8 +28,8 @@ const (
 	// Server Configuration
 	DefaultServerPort  = "8080"
 	DefaultReadTimeout = 15 // seconds
-	// Radio/lyrics cold paths: Last.fm + parallel resolve (must be ≥ recommend handler budget).
-	DefaultWriteTimeout = 35 // seconds
+	// Explore stream can emit shelves for ~55s; write timeout must cover the full NDJSON body.
+	DefaultWriteTimeout = 60 // seconds
 	DefaultIdleTimeout  = 120 // seconds
 
 	// Request Limits

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -35,8 +36,12 @@ const (
 	// ponytail: region hard-coded until settings grow a country picker
 	exploreCountry = "Romania"
 	exploreTTL     = 6 * time.Hour
-	exploreCap     = 10
-	exploreFetch   = 16
+	// Smaller shelves → faster first paint when streaming section-by-section.
+	exploreCap   = 8
+	exploreFetch = 12
+	// One stuck chart must not block the rest of the stream.
+	exploreSectionBudget = 12 * time.Second
+	exploreStreamBudget  = 55 * time.Second
 )
 
 type recommendEntry struct {
@@ -91,11 +96,17 @@ func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearc
 }
 
 // GET /explore?refresh=1 → chart shelves (Romania / Worldwide / vibes), server-cached 6h.
+// GET /explore?stream=1 → NDJSON: meta, then one section line as each shelf is ready, then done.
 func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 	if h.apiKey == "" {
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "LASTFM_API_KEY not set"})
 	}
 	refresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
+	stream := c.Query("stream") == "1" || strings.EqualFold(c.Query("stream"), "true")
+	if stream {
+		return h.streamExplore(c, refresh)
+	}
+
 	if !refresh {
 		if sections, ok := h.exploreSnap(true); ok {
 			c.Set("Cache-Control", "public, max-age=21600")
@@ -103,7 +114,7 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 		}
 	}
 
-	sections, err := h.buildExplore(c.Context())
+	sections, err := h.buildExplore(c.Context(), nil)
 	if err != nil || len(sections) == 0 {
 		// Serve last good payload even past TTL — better than empty Explore.
 		if stale, ok := h.exploreSnap(false); ok {
@@ -123,12 +134,102 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": false})
 }
 
+type exploreStreamEvent struct {
+	Type    string          `json:"type"`
+	Country string          `json:"country,omitempty"`
+	Cached  *bool           `json:"cached,omitempty"`
+	Section *ExploreSection `json:"section,omitempty"`
+	Error   string          `json:"error,omitempty"`
+}
+
+func (h *RecommendHandler) streamExplore(c fiber.Ctx, refresh bool) error {
+	c.Set("Content-Type", "application/x-ndjson")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		enc := json.NewEncoder(w)
+		write := func(ev exploreStreamEvent) bool {
+			if err := enc.Encode(ev); err != nil {
+				return false
+			}
+			return w.Flush() == nil
+		}
+		boolPtr := func(v bool) *bool { return &v }
+
+		if !refresh {
+			if sections, ok := h.exploreSnap(true); ok {
+				if !write(exploreStreamEvent{Type: "meta", Country: exploreCountry, Cached: boolPtr(true)}) {
+					return
+				}
+				for i := range sections {
+					sec := sections[i]
+					if !write(exploreStreamEvent{Type: "section", Section: &sec}) {
+						return
+					}
+				}
+				_ = write(exploreStreamEvent{Type: "done", Cached: boolPtr(true)})
+				return
+			}
+		}
+
+		if !write(exploreStreamEvent{Type: "meta", Country: exploreCountry, Cached: boolPtr(false)}) {
+			return
+		}
+
+		// Detach cancel so a brief client blip doesn't abort in-flight resolve;
+		// Flush errors still stop the stream when the client is gone.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), exploreStreamBudget)
+		defer cancel()
+
+		sections, err := h.buildExplore(ctx, func(sec ExploreSection) error {
+			if !write(exploreStreamEvent{Type: "section", Section: &sec}) {
+				return context.Canceled
+			}
+			return nil
+		})
+		if err != nil && len(sections) == 0 {
+			if stale, ok := h.exploreSnap(false); ok {
+				for i := range stale {
+					sec := stale[i]
+					if !write(exploreStreamEvent{Type: "section", Section: &sec}) {
+						return
+					}
+				}
+				_ = write(exploreStreamEvent{Type: "done", Cached: boolPtr(true)})
+				return
+			}
+			_ = write(exploreStreamEvent{Type: "error", Error: "Couldn't load charts"})
+			return
+		}
+		if len(sections) == 0 {
+			if stale, ok := h.exploreSnap(false); ok {
+				for i := range stale {
+					sec := stale[i]
+					if !write(exploreStreamEvent{Type: "section", Section: &sec}) {
+						return
+					}
+				}
+				_ = write(exploreStreamEvent{Type: "done", Cached: boolPtr(true)})
+				return
+			}
+			_ = write(exploreStreamEvent{Type: "error", Error: "No playable charts right now"})
+			return
+		}
+		if len(sections) >= 2 {
+			h.exploreStore(sections)
+		}
+		_ = write(exploreStreamEvent{Type: "done", Cached: boolPtr(false)})
+	})
+}
+
 type exploreJob struct {
 	id, title, subtitle string
 	q                   url.Values
 }
 
-func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, error) {
+// buildExplore resolves shelves one at a time. onSection is called as each shelf is ready (stream path).
+func (h *RecommendHandler) buildExplore(ctx context.Context, onSection func(ExploreSection) error) ([]ExploreSection, error) {
 	limit := strconv.Itoa(exploreFetch)
 	jobs := []exploreJob{
 		{"romania", "Romania", "Hot this week", url.Values{
@@ -153,24 +254,35 @@ func (h *RecommendHandler) buildExplore(ctx context.Context) ([]ExploreSection, 
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
+		sectionCtx, cancel := context.WithTimeout(ctx, exploreSectionBudget)
 		var pairs []lastfmPair
 		var err error
 		if job.id == "viral-ro" {
-			pairs, err = h.kworbROViral(ctx)
+			pairs, err = h.kworbROViral(sectionCtx)
 		} else {
-			pairs, err = h.lastfmTracks(ctx, job.q, "tracks")
+			pairs, err = h.lastfmTracks(sectionCtx, job.q, "tracks")
 		}
 		if err != nil || len(pairs) == 0 {
+			cancel()
 			continue
 		}
-		songs := h.resolveN(ctx, pairs, lastfmPair{}, exploreCap)
+		songs := h.resolveN(sectionCtx, pairs, lastfmPair{}, exploreCap)
 		if len(songs) == 0 {
+			cancel()
 			continue
 		}
-		h.covers.FillSongs(ctx, songs)
-		out = append(out, ExploreSection{
+		h.covers.FillSongs(sectionCtx, songs)
+		cancel()
+
+		sec := ExploreSection{
 			ID: job.id, Title: job.title, Subtitle: job.subtitle, Songs: songs,
-		})
+		}
+		out = append(out, sec)
+		if onSection != nil {
+			if err := onSection(sec); err != nil {
+				return out, err
+			}
+		}
 	}
 	if len(out) == 0 {
 		return nil, nil
