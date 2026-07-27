@@ -536,6 +536,54 @@ func (h *RecommendHandler) GetSimilarArtists(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"artists": names})
 }
 
+// GET /artist-albums?artist= → {artist, albums:[{name,artist,image,playcount}]} via Last.fm artist.getTopAlbums.
+func (h *RecommendHandler) GetArtistAlbums(c fiber.Ctx) error {
+	if h.apiKey == "" {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "LASTFM_API_KEY not set"})
+	}
+	artist := strings.TrimSpace(c.Query("artist"))
+	if artist == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist required"})
+	}
+	albums, err := h.lastfmTopAlbums(c.Context(), artist)
+	if err != nil {
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't load albums"})
+	}
+	return c.JSON(fiber.Map{"artist": artist, "albums": albums})
+}
+
+// GET /album-tracks?artist=&album= → playable Songs from Last.fm album.getInfo + resolve.
+func (h *RecommendHandler) GetAlbumTracks(c fiber.Ctx) error {
+	if h.apiKey == "" {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "LASTFM_API_KEY not set"})
+	}
+	artist := strings.TrimSpace(c.Query("artist"))
+	album := strings.TrimSpace(c.Query("album"))
+	if artist == "" || album == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and album required"})
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 30*time.Second)
+	defer cancel()
+
+	pairs, err := h.lastfmAlbumTracks(ctx, artist, album)
+	if err != nil {
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't load album tracks"})
+	}
+	if len(pairs) == 0 {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "No tracks for this album"})
+	}
+	capN := recommendResolveCap
+	if len(pairs) < capN {
+		capN = len(pairs)
+	}
+	songs := h.resolveN(ctx, pairs, lastfmPair{}, capN, false)
+	if len(songs) == 0 {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Couldn't resolve album tracks"})
+	}
+	h.covers.FillSongs(ctx, songs)
+	return c.JSON(songs)
+}
+
 // GET /resolve?artist=&title= → one playable Song whose artist+title match the request.
 // `strict` is accepted for client compat; resolve always requires a real title+artist match
 // (never a first-hit / artist-only fallback — that stamped wrong audio onto vault rows).
@@ -992,6 +1040,105 @@ func (h *RecommendHandler) lastfmSimilarArtists(ctx context.Context, artist stri
 	return out, nil
 }
 
+func (h *RecommendHandler) lastfmTopAlbums(ctx context.Context, artist string) ([]domain.ArtistAlbum, error) {
+	q := url.Values{
+		"method":      {"artist.getTopAlbums"},
+		"artist":      {artist},
+		"api_key":     {h.apiKey},
+		"format":      {"json"},
+		"autocorrect": {"1"},
+		"limit":       {"20"},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://ws.audioscrobbler.com/2.0/?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+
+	var data struct {
+		TopAlbums struct {
+			Album json.RawMessage `json:"album"`
+		} `json:"topalbums"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	raw, err := decodeLastfmAlbumList(data.TopAlbums.Album)
+	if err != nil {
+		return nil, err
+	}
+	return mapLastfmAlbums(artist, raw), nil
+}
+
+func (h *RecommendHandler) lastfmAlbumTracks(ctx context.Context, artist, album string) ([]lastfmPair, error) {
+	q := url.Values{
+		"method":      {"album.getInfo"},
+		"artist":      {artist},
+		"album":       {album},
+		"api_key":     {h.apiKey},
+		"format":      {"json"},
+		"autocorrect": {"1"},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://ws.audioscrobbler.com/2.0/?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+
+	var data struct {
+		Album struct {
+			Artist string `json:"artist"`
+			Tracks struct {
+				Track json.RawMessage `json:"track"`
+			} `json:"tracks"`
+		} `json:"album"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	tracks, err := decodeLastfmTrackList(data.Album.Tracks.Track)
+	if err != nil {
+		return nil, err
+	}
+	fallbackArtist := strings.TrimSpace(data.Album.Artist)
+	if fallbackArtist == "" {
+		fallbackArtist = artist
+	}
+	out := make([]lastfmPair, 0, len(tracks))
+	seen := map[string]bool{}
+	for _, t := range tracks {
+		title := strings.TrimSpace(t.Name)
+		a := strings.TrimSpace(t.Artist.Name)
+		if a == "" {
+			a = fallbackArtist
+		}
+		if title == "" || a == "" {
+			continue
+		}
+		k := songKey(a, title)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, lastfmPair{artist: a, title: title})
+	}
+	return out, nil
+}
+
 func (h *RecommendHandler) lastfmTracks(ctx context.Context, q url.Values, root string) ([]lastfmPair, error) {
 	q.Set("api_key", h.apiKey)
 	q.Set("format", "json")
@@ -1049,6 +1196,110 @@ type lastfmTrack struct {
 
 type lastfmArtist struct {
 	Name string `json:"name"`
+}
+
+type lastfmImage struct {
+	URL  string `json:"#text"`
+	Size string `json:"size"`
+}
+
+type lastfmAlbumRow struct {
+	Name      string        `json:"name"`
+	Playcount any           `json:"playcount"`
+	Image     []lastfmImage `json:"image"`
+	Artist    struct {
+		Name string `json:"name"`
+	} `json:"artist"`
+}
+
+func decodeLastfmAlbumList(raw json.RawMessage) ([]lastfmAlbumRow, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var many []lastfmAlbumRow
+	if err := json.Unmarshal(raw, &many); err == nil {
+		return many, nil
+	}
+	var one lastfmAlbumRow
+	if err := json.Unmarshal(raw, &one); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(one.Name) == "" {
+		return nil, nil
+	}
+	return []lastfmAlbumRow{one}, nil
+}
+
+// mapLastfmAlbums drops null/empty/"(null)" rows and dedupes by normalized name.
+func mapLastfmAlbums(fallbackArtist string, rows []lastfmAlbumRow) []domain.ArtistAlbum {
+	seen := map[string]bool{}
+	out := make([]domain.ArtistAlbum, 0, len(rows))
+	for _, row := range rows {
+		name := strings.TrimSpace(row.Name)
+		if name == "" || strings.EqualFold(name, "(null)") || strings.EqualFold(name, "null") {
+			continue
+		}
+		key := utils.NormalizeString(name)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		artist := strings.TrimSpace(row.Artist.Name)
+		if artist == "" {
+			artist = strings.TrimSpace(fallbackArtist)
+		}
+		out = append(out, domain.ArtistAlbum{
+			Name:      name,
+			Artist:    artist,
+			Image:     lastfmBestImage(row.Image),
+			Playcount: lastfmPlaycount(row.Playcount),
+		})
+		if len(out) >= 16 {
+			break
+		}
+	}
+	return out
+}
+
+func lastfmBestImage(images []lastfmImage) string {
+	prefer := []string{"extralarge", "large", "medium", "small"}
+	bySize := make(map[string]string, len(images))
+	var first string
+	for _, im := range images {
+		u := strings.TrimSpace(im.URL)
+		if u == "" {
+			continue
+		}
+		if strings.HasPrefix(u, "http://") {
+			u = "https://" + strings.TrimPrefix(u, "http://")
+		}
+		if first == "" {
+			first = u
+		}
+		bySize[im.Size] = u
+	}
+	for _, size := range prefer {
+		if u := bySize[size]; u != "" {
+			return u
+		}
+	}
+	return first
+}
+
+func lastfmPlaycount(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case string:
+		n = strings.TrimSpace(n)
+		if n == "" {
+			return 0
+		}
+		i, _ := strconv.ParseInt(n, 10, 64)
+		return i
+	default:
+		return 0
+	}
 }
 
 func decodeLastfmTrackList(raw json.RawMessage) ([]lastfmTrack, error) {

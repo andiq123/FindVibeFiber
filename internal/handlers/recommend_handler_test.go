@@ -234,6 +234,29 @@ func TestResolveIgnoresStaleWrongCache(t *testing.T) {
 	}
 }
 
+func TestMapLastfmAlbumsCleansAndDedupes(t *testing.T) {
+	got := mapLastfmAlbums("Cher", []lastfmAlbumRow{
+		{Name: "Believe", Playcount: "100", Artist: struct {
+			Name string `json:"name"`
+		}{Name: "Cher"}, Image: []lastfmImage{{URL: "http://img/a.jpg", Size: "large"}}},
+		{Name: "(null)"},
+		{Name: "  "},
+		{Name: "Believe"}, // dupe
+		{Name: "The Very Best of Cher", Playcount: float64(50), Artist: struct {
+			Name string `json:"name"`
+		}{Name: ""}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("want 2 albums, got %+v", got)
+	}
+	if got[0].Name != "Believe" || got[0].Image != "https://img/a.jpg" || got[0].Playcount != 100 {
+		t.Fatalf("first album %+v", got[0])
+	}
+	if got[1].Name != "The Very Best of Cher" || got[1].Artist != "Cher" {
+		t.Fatalf("second album %+v", got[1])
+	}
+}
+
 func TestRecommendCacheRoundTrip(t *testing.T) {
 	h := NewRecommendHandler(nil, "", stubSearch{}, nil)
 	key := songKey("Nero", "Promises")
