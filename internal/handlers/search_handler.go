@@ -18,7 +18,6 @@ import (
 
 // Match explore: don't let cold iTunes dominate search p95.
 const searchCoverBudget = 2500 * time.Millisecond
-const searchSongCoverBudget = 400 * time.Millisecond
 
 type SearchHandler struct {
 	searchService ports.ISearchService
@@ -43,7 +42,7 @@ type searchStreamEvent struct {
 }
 
 // GET /search?q=&page= → JSON SearchResponse.
-// GET /search?q=&stream=1 → NDJSON: meta → song|songs* → done (mapped hits as ready).
+// GET /search?q=&stream=1 → NDJSON: meta → song* → done (one song as each maps; no cover wait).
 func (sh *SearchHandler) Search(c fiber.Ctx) error {
 	query := c.Query("q")
 	if query == "" {
@@ -79,22 +78,19 @@ func (sh *SearchHandler) Search(c fiber.Ctx) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no songs found"})
 	}
 
-	// Last.fm discovers the catalog; providers only map playable stream URLs.
-	// Fill art with a short budget — empty image beats a slow search response.
 	coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), searchCoverBudget)
 	sh.covers.FillSongs(coverCtx, response.Songs)
 	sh.covers.FillArtists(coverCtx, response.Artists)
 	sh.covers.FillAlbums(coverCtx, response.Albums)
 	cancel()
 
-	// Align with SearchService TTL (2m); clients may revalidate sooner.
 	c.Set("Cache-Control", "private, max-age=120")
 	return c.JSON(response)
 }
 
 func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error {
 	c.Set("Content-Type", "application/x-ndjson")
-	c.Set("Cache-Control", "no-cache")
+	c.Set("Cache-Control", "no-cache, no-transform")
 	c.Set("Connection", "keep-alive")
 	c.Set("X-Accel-Buffering", "no")
 
@@ -104,35 +100,21 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 			if err := enc.Encode(ev); err != nil {
 				return false
 			}
+			// Flush every line so proxies/clients see songs as they map.
 			return w.Flush() == nil
 		}
 
 		var streamed int
-		var buf []domain.Song
-		flushSongs := func() bool {
-			if len(buf) == 0 {
-				return true
-			}
-			batch := buf
-			buf = nil
-			if len(batch) == 1 {
-				if !write(searchStreamEvent{Type: "song", Song: &batch[0]}) {
-					return false
-				}
-			} else if !write(searchStreamEvent{Type: "songs", Songs: batch}) {
-				return false
-			}
-			streamed += len(batch)
-			return true
-		}
-
 		onMeta := func(p domain.SearchProgress) error {
 			artists := append([]domain.SearchArtist(nil), p.Artists...)
 			albums := append([]domain.ArtistAlbum(nil), p.Albums...)
-			coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), searchCoverBudget)
-			sh.covers.FillArtists(coverCtx, artists)
-			sh.covers.FillAlbums(coverCtx, albums)
-			cancel()
+			// Short budget only — never stall first byte for seconds.
+			if sh.covers != nil {
+				coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 500*time.Millisecond)
+				sh.covers.FillArtists(coverCtx, artists)
+				sh.covers.FillAlbums(coverCtx, albums)
+				cancel()
+			}
 			if !write(searchStreamEvent{
 				Type:       "meta",
 				Artists:    artists,
@@ -144,27 +126,20 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 			return nil
 		}
 		onSong := func(song domain.Song) error {
-			songs := []domain.Song{song}
-			// Skip cover wait when Last.fm already attached art — keeps the stream snappy.
-			if strings.TrimSpace(songs[0].Image) == "" || strings.Contains(songs[0].Image, "2a96cbd8b46e442fc41c2b86b821562f") {
-				coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), searchSongCoverBudget)
-				sh.covers.FillSongs(coverCtx, songs)
-				cancel()
+			// Flush as soon as mapped. Never block the stream on cover I/O —
+			// catalog art is already preferred in mapOne; client fills gaps via /cover.
+			s := song
+			if strings.TrimSpace(s.Image) == "" || strings.Contains(s.Image, "2a96cbd8b46e442fc41c2b86b821562f") {
+				s.Image = ""
 			}
-			buf = append(buf, songs[0])
-			// First hit flushes immediately; later hits batch up to 5 for fewer UI rebuilds.
-			if streamed == 0 || len(buf) >= 5 {
-				if !flushSongs() {
-					return context.Canceled
-				}
+			streamed++
+			if !write(searchStreamEvent{Type: "song", Song: &s}) {
+				return context.Canceled
 			}
 			return nil
 		}
 
 		resp, err := sh.searchService.SearchWithProgress(c.Context(), query, page, onMeta, onSong)
-		if !flushSongs() {
-			return
-		}
 		if err != nil && streamed == 0 {
 			_ = write(searchStreamEvent{Type: "error", Error: "Couldn't search"})
 			return

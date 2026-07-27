@@ -374,7 +374,11 @@ func (l *LastFMCatalog) artistTopTracks(ctx context.Context, artist string, limi
 		if a == "" || title == "" {
 			continue
 		}
-		out = append(out, CatalogHit{Artist: a, Title: title})
+		out = append(out, CatalogHit{
+			Artist: a,
+			Title:  title,
+			Image:  utils.UpgradeHTTPS(bestSearchImage(t.Image)),
+		})
 	}
 	return out, nil
 }
@@ -434,6 +438,10 @@ type lastfmTrackRow struct {
 	Artist struct {
 		Name string `json:"name"`
 	} `json:"artist"`
+	Image []struct {
+		URL  string `json:"#text"`
+		Size string `json:"size"`
+	} `json:"image"`
 }
 
 func decodeSearchTracks(raw json.RawMessage) ([]searchTrackRow, error) {

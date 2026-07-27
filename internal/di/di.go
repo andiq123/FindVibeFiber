@@ -62,6 +62,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		cfg.Search.Timeout,
 		catalog,
 	)
+	searchSvc.SetCovers(covers)
 
 	return Handlers{
 		Health:      handlers.NewHealthHandler(scrape.Client),

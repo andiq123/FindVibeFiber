@@ -43,6 +43,7 @@ type SearchService struct {
 	config        *domain.SearchConfig
 	searchTimeout time.Duration
 	catalog       catalogSearcher
+	covers        *CoverService
 
 	cacheMu sync.Mutex
 	cache   map[string]searchCacheEntry
@@ -69,6 +70,14 @@ func NewSearchService(
 		catalog:       catalog,
 		cache:         make(map[string]searchCacheEntry),
 	}
+}
+
+// SetCovers wires artwork lookup used while mapping (parallel per hit; does not stall the stream).
+func (ss *SearchService) SetCovers(covers *CoverService) {
+	if ss == nil {
+		return
+	}
+	ss.covers = covers
 }
 
 // Search: Last.fm discovers songs/artists → providers map playable URLs → only successful maps.
@@ -189,7 +198,7 @@ func (ss *SearchService) searchUncached(
 	}
 
 	resp := domain.NewSearchResponse(nil, pageData.Pagination)
-	// Discovery chrome only on page 1 — artists + Last.fm albums (search + top artist).
+	// Discovery chrome only on page 1 — artists + Last.fm albums (no cover wait; stream fills later on client).
 	if page == 1 {
 		if len(pageData.Artists) > 0 {
 			resp.Artists = make([]domain.SearchArtist, 0, len(pageData.Artists))
@@ -373,6 +382,17 @@ func (ss *SearchService) mapOne(ctx context.Context, hit CatalogHit) (domain.Son
 		song.Image = img
 	} else if !hasRealCover(song.Image) {
 		song.Image = ""
+		// Parallel with other mappers — brief iTunes/Last.fm race, then emit.
+		if ss.covers != nil {
+			q := strings.TrimSpace(hit.Artist + " " + hit.Title)
+			if q != "" {
+				cctx, cancel := context.WithTimeout(ctx, 450*time.Millisecond)
+				if filled := ss.covers.Lookup(cctx, q); filled != "" {
+					song.Image = filled
+				}
+				cancel()
+			}
+		}
 	}
 	return song, true
 }
