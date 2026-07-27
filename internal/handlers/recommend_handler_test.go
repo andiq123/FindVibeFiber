@@ -262,6 +262,53 @@ func TestResolveIgnoresStaleWrongCache(t *testing.T) {
 	}
 }
 
+func TestResolveRefreshBypassesCache(t *testing.T) {
+	h := NewRecommendHandler(nil, "", stubSearch{hits: map[string][]domain.Song{
+		"nero promises": {
+			{Title: "Promises", Artist: "Nero", Link: "https://fresh.mp3"},
+		},
+	}}, nil)
+	want := lastfmPair{"Nero", "Promises"}
+	key := songKey(want.artist, want.title)
+	h.resolveStore(key, domain.Song{Title: "Promises", Artist: "Nero", Link: "https://cached.mp3"})
+	cached, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false)
+	if !ok || cached.Link != "https://cached.mp3" {
+		t.Fatalf("warm cache should hit, got %+v ok=%v", cached, ok)
+	}
+	fresh, ok := h.resolveOne(context.Background(), want, lastfmPair{}, true)
+	if !ok || fresh.Link != "https://fresh.mp3" {
+		t.Fatalf("refresh must bypass cache, got %+v ok=%v", fresh, ok)
+	}
+}
+
+func TestStreamProxyAllowedHosts(t *testing.T) {
+	allow := []string{
+		"https://cs1.mp3.pm/listen/a.mp3",
+		"https://mn1.sunproxy.net/file/abc/x.mp3",
+		"https://musify.club/track/pl/1/x.mp3",
+	}
+	for _, raw := range allow {
+		u, err := url.Parse(raw)
+		if err != nil || !streamProxyAllowed(u) {
+			t.Fatalf("expected allow %s", raw)
+		}
+	}
+	deny := []string{
+		"http://cs1.mp3.pm/listen/a.mp3",
+		"https://evil.example/a.mp3",
+		"https://mp3.pm.evil.com/a.mp3",
+	}
+	for _, raw := range deny {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %s: %v", raw, err)
+		}
+		if streamProxyAllowed(u) {
+			t.Fatalf("expected deny %s", raw)
+		}
+	}
+}
+
 func TestMapLastfmAlbumsCleansAndDedupes(t *testing.T) {
 	got := mapLastfmAlbums("Cher", []lastfmAlbumRow{
 		{Name: "Believe", Playcount: "100", Artist: struct {

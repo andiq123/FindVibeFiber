@@ -43,7 +43,11 @@ func NewServer(cfg config.ServerConfig) *Server {
 	// Skip compress on NDJSON explore — buffering would defeat section streaming.
 	app.Use(compress.New(compress.Config{
 		Next: func(c fiber.Ctx) bool {
-			return c.Path() == "/explore" &&
+			path := c.Path()
+			if path == "/stream" {
+				return true
+			}
+			return path == "/explore" &&
 				(c.Query("stream") == "1" || strings.EqualFold(c.Query("stream"), "true"))
 		},
 	}))
@@ -102,6 +106,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	}))
 	app.Get("/resolve", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Recommend.GetResolve(c)
+	}))
+	app.Get("/stream", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Recommend.GetStream(c)
 	}))
 	app.Get("/spotify/playlist", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Spotify.GetPlaylist(c)

@@ -67,7 +67,7 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 		Suggestions: handlers.NewSuggestionsHandler(services.NewSuggestionsService(httpClient)),
 		Cover:       handlers.NewCoverHandler(covers),
 		Search:      handlers.NewSearchHandler(searchSvc, covers),
-		Recommend:   handlers.NewRecommendHandler(httpClient, os.Getenv("LASTFM_API_KEY"), searchSvc, covers),
+		Recommend:   handlers.NewRecommendHandlerUpstream(httpClient, scrape.Client, os.Getenv("LASTFM_API_KEY"), searchSvc, covers),
 		Lyrics:      handlers.NewLyricsHandler(httpClient),
 		Spotify:     handlers.NewSpotifyHandler(httpClient),
 	}

@@ -79,10 +79,11 @@ var (
 )
 
 type RecommendHandler struct {
-	client *http.Client
-	apiKey string
-	search ports.ISearchService
-	covers *services.CoverService
+	client   *http.Client
+	upstream *http.Client // media proxy upstream (scrape client when available)
+	apiKey   string
+	search   ports.ISearchService
+	covers   *services.CoverService
 
 	exploreMu       sync.Mutex
 	exploreSections []ExploreSection
@@ -102,8 +103,22 @@ type RecommendHandler struct {
 }
 
 func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearchService, covers *services.CoverService) *RecommendHandler {
+	return NewRecommendHandlerUpstream(client, client, apiKey, search, covers)
+}
+
+// NewRecommendHandlerUpstream uses `upstream` for media proxy fetches (prefer scrape client w/ cookies).
+func NewRecommendHandlerUpstream(
+	client *http.Client,
+	upstream *http.Client,
+	apiKey string,
+	search ports.ISearchService,
+	covers *services.CoverService,
+) *RecommendHandler {
+	if upstream == nil {
+		upstream = client
+	}
 	return &RecommendHandler{
-		client: client, apiKey: apiKey, search: search, covers: covers,
+		client: client, upstream: upstream, apiKey: apiKey, search: search, covers: covers,
 		recommendCache: make(map[string]recommendEntry),
 		pairsCache:     make(map[string]pairsEntry),
 		resolveCache:   make(map[string]resolveEntry),
@@ -653,7 +668,8 @@ func (h *RecommendHandler) GetAlbumTracks(c fiber.Ctx) error {
 	return c.JSON(songs)
 }
 
-// GET /resolve?artist=&title= → one playable Song whose artist+title match the request.
+// GET /resolve?artist=&title=&refresh=1 → one playable Song whose artist+title match the request.
+// `refresh=1` bypasses the short resolve cache (dead CDN recovery).
 // `strict` is accepted for client compat; resolve always requires a real title+artist match
 // (never a first-hit / artist-only fallback — that stamped wrong audio onto vault rows).
 func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
@@ -662,7 +678,8 @@ func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
 	if artist == "" || title == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and title required"})
 	}
-	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{}, false)
+	refresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
+	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{}, refresh)
 	if !ok {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
 	}
@@ -670,6 +687,108 @@ func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
 	songs := []domain.Song{song}
 	h.covers.FillSongs(c.Context(), songs)
 	return c.JSON(songs[0])
+}
+
+// GET /stream?artist=&title= → fresh-resolve then proxy CDN bytes (fallback when the phone can't hotlink).
+// Not the default play path — clients must try the direct song.link first.
+func (h *RecommendHandler) GetStream(c fiber.Ctx) error {
+	artist := strings.TrimSpace(c.Query("artist"))
+	title := strings.TrimSpace(c.Query("title"))
+	if artist == "" || title == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and title required"})
+	}
+	if h.upstream == nil {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "stream proxy unavailable"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 45*time.Second)
+	defer cancel()
+
+	song, ok := h.resolveOne(ctx, lastfmPair{artist: artist, title: title}, lastfmPair{}, true)
+	if !ok {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
+	}
+	link := strings.TrimSpace(song.Link)
+	upstreamURL, err := url.Parse(link)
+	if err != nil || !streamProxyAllowed(upstreamURL) {
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "stream host not allowed"})
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+	if err != nil {
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't open stream"})
+	}
+	applyStreamUpstreamHeaders(req, upstreamURL)
+	if rng := strings.TrimSpace(c.Get("Range")); rng != "" {
+		req.Header.Set("Range", rng)
+	}
+
+	resp, err := h.upstream.Do(req)
+	if err != nil {
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't fetch stream"})
+	}
+	if resp.StatusCode >= 400 {
+		resp.Body.Close()
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Upstream stream failed"})
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" || strings.HasPrefix(ct, "text/") {
+		ct = "audio/mpeg"
+	}
+	c.Set("Content-Type", ct)
+	c.Set("Cache-Control", "private, no-store")
+	c.Set("Accept-Ranges", "bytes")
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		c.Set("Content-Length", cl)
+	}
+	if cr := resp.Header.Get("Content-Range"); cr != "" {
+		c.Set("Content-Range", cr)
+	}
+	c.Status(resp.StatusCode)
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		defer resp.Body.Close()
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, 80<<20)) // hard cap ~80MB
+		_ = w.Flush()
+	})
+}
+
+func streamProxyAllowed(u *url.URL) bool {
+	if u == nil || !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	if host == "mp3.pm" || strings.HasSuffix(host, ".mp3.pm") {
+		return true
+	}
+	if strings.Contains(host, "sunproxy") {
+		return true
+	}
+	if host == "mp3mn.net" || strings.HasSuffix(host, ".mp3mn.net") {
+		return true
+	}
+	if host == "musify.club" || strings.HasSuffix(host, ".musify.club") {
+		return true
+	}
+	return false
+}
+
+func applyStreamUpstreamHeaders(req *http.Request, u *url.URL) {
+	req.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+	req.Header.Set("Accept", "*/*")
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case strings.Contains(host, "sunproxy"), strings.Contains(host, "mp3mn"):
+		req.Header.Set("Referer", "https://mp3mn.net/")
+	case strings.Contains(host, "mp3.pm"):
+		req.Header.Set("Referer", "https://mp3.pm/")
+	case strings.Contains(host, "musify.club"):
+		req.Header.Set("Referer", "https://musify.club/")
+	}
 }
 
 // GET /recommend?artist=&title=&mode=radio&offset=N
