@@ -88,6 +88,9 @@ func NewServer(cfg config.ServerConfig) *Server {
 	app.Get("/album-tracks", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Recommend.GetAlbumTracks(c)
 	}))
+	app.Get("/explore/cache", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
+		return h.Recommend.GetExploreCache(c)
+	}))
 	app.Get("/explore", s.withHandlers(func(h *di.Handlers, c fiber.Ctx) error {
 		return h.Recommend.GetExplore(c)
 	}))

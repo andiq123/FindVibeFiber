@@ -110,6 +110,12 @@ func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearc
 	}
 }
 
+// GET /explore/cache → server chart-cache status (TTL remaining, shelf counts). No client chart store.
+func (h *RecommendHandler) GetExploreCache(c fiber.Ctx) error {
+	c.Set("Cache-Control", "no-store")
+	return c.JSON(h.exploreCacheStatus())
+}
+
 // GET /explore?refresh=1 → chart shelves (Romania / Worldwide / vibes), server-cached 24h.
 // GET /explore?stream=1 → NDJSON: meta, then one section line as each shelf is ready, then done.
 func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
@@ -467,6 +473,61 @@ func (h *RecommendHandler) exploreStore(sections []ExploreSection) {
 	defer h.exploreMu.Unlock()
 	h.exploreSections = append([]ExploreSection(nil), sections...)
 	h.exploreAt = time.Now()
+}
+
+// exploreCacheStatus is the authoritative Explore chart cache view (in-memory on the API).
+func (h *RecommendHandler) exploreCacheStatus() fiber.Map {
+	h.exploreMu.Lock()
+	defer h.exploreMu.Unlock()
+
+	ttlSec := int64(exploreTTL / time.Second)
+	shelves := make([]string, 0, len(h.exploreSections))
+	songs := 0
+	for _, sec := range h.exploreSections {
+		if t := strings.TrimSpace(sec.Title); t != "" {
+			shelves = append(shelves, t)
+		} else if id := strings.TrimSpace(sec.ID); id != "" {
+			shelves = append(shelves, id)
+		}
+		songs += len(sec.Songs)
+	}
+
+	if len(h.exploreSections) == 0 || h.exploreAt.IsZero() {
+		return fiber.Map{
+			"country":          exploreCountry,
+			"cached":           false,
+			"fresh":            false,
+			"createdAt":        nil,
+			"expiresAt":        nil,
+			"ttlSeconds":       ttlSec,
+			"remainingSeconds": int64(0),
+			"ageSeconds":       int64(0),
+			"sections":         0,
+			"songs":            0,
+			"shelves":          shelves,
+		}
+	}
+
+	age := time.Since(h.exploreAt)
+	remaining := exploreTTL - age
+	if remaining < 0 {
+		remaining = 0
+	}
+	created := h.exploreAt.UTC().Format(time.RFC3339)
+	expires := h.exploreAt.Add(exploreTTL).UTC().Format(time.RFC3339)
+	return fiber.Map{
+		"country":          exploreCountry,
+		"cached":           true,
+		"fresh":            remaining > 0,
+		"createdAt":        created,
+		"expiresAt":        expires,
+		"ttlSeconds":       ttlSec,
+		"remainingSeconds": int64(remaining / time.Second),
+		"ageSeconds":       int64(age / time.Second),
+		"sections":         len(h.exploreSections),
+		"songs":            songs,
+		"shelves":          shelves,
+	}
 }
 
 func (h *RecommendHandler) recommendSnap(key string) ([]domain.Song, bool) {

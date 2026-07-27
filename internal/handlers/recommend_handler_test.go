@@ -152,6 +152,13 @@ func TestExploreCacheRoundTrip(t *testing.T) {
 	if !ok || len(got) != 1 || got[0].ID != "romania" || len(got[0].Songs) != 1 {
 		t.Fatalf("got %+v ok=%v", got, ok)
 	}
+	status := h.exploreCacheStatus()
+	if status["cached"] != true || status["fresh"] != true || status["sections"] != 1 || status["songs"] != 1 {
+		t.Fatalf("fresh status %+v", status)
+	}
+	if rem, _ := status["remainingSeconds"].(int64); rem <= 0 || rem > int64(exploreTTL/time.Second) {
+		t.Fatalf("remainingSeconds %+v", status["remainingSeconds"])
+	}
 	// Stale-beyond-TTL still serves last good payload.
 	h.exploreAt = h.exploreAt.Add(-exploreTTL - time.Minute)
 	if _, ok := h.exploreSnap(true); ok {
@@ -160,6 +167,10 @@ func TestExploreCacheRoundTrip(t *testing.T) {
 	stale, ok := h.exploreSnap(false)
 	if !ok || len(stale) != 1 {
 		t.Fatalf("stale snap got %+v ok=%v", stale, ok)
+	}
+	staleStatus := h.exploreCacheStatus()
+	if staleStatus["cached"] != true || staleStatus["fresh"] != false || staleStatus["remainingSeconds"] != int64(0) {
+		t.Fatalf("stale status %+v", staleStatus)
 	}
 }
 
