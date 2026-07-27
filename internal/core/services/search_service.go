@@ -20,8 +20,9 @@ import (
 const (
 	searchCacheTTL = 2 * time.Minute
 	searchCacheCap = 256
-	// Soft wait: after this, finish early once we have enough playable rows.
-	searchCollectSoftMin = 800 * time.Millisecond
+	// Oversample Last.fm so provider mapping attrition still fills MaxResults.
+	searchCatalogOversample = 2
+	searchMapPeek           = 8
 )
 
 type searchCacheEntry struct {
@@ -29,19 +30,30 @@ type searchCacheEntry struct {
 	at   time.Time
 }
 
+// catalogSearcher is Last.fm discovery (tests inject a stub).
+type catalogSearcher interface {
+	Configured() bool
+	Search(ctx context.Context, query string, page, limit int) (CatalogPage, error)
+	TopAlbums(ctx context.Context, artist string, limit int) ([]domain.ArtistAlbum, error)
+}
+
 type SearchService struct {
 	providers     []ports.IMusicProvider
-	priorities    map[string]int
-	ranker        *SearchRanker
 	config        *domain.SearchConfig
 	searchTimeout time.Duration
+	catalog       catalogSearcher
 
 	cacheMu sync.Mutex
 	cache   map[string]searchCacheEntry
 	sf      singleflight.Group
 }
 
-func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchConfig, timeout time.Duration) *SearchService {
+func NewSearchService(
+	providers []ports.IMusicProvider,
+	config *domain.SearchConfig,
+	timeout time.Duration,
+	catalog catalogSearcher,
+) *SearchService {
 	if config == nil {
 		config = domain.DefaultSearchConfig()
 	}
@@ -49,40 +61,33 @@ func NewSearchService(providers []ports.IMusicProvider, config *domain.SearchCon
 		timeout = time.Duration(constants.DefaultSearchTimeout) * time.Second
 	}
 
-	priorities := make(map[string]int, len(providers))
-	for _, p := range providers {
-		priorities[p.Name()] = p.Priority()
-	}
-
 	return &SearchService{
 		providers:     providers,
-		priorities:    priorities,
-		ranker:        NewSearchRanker(config.RankingWeights),
 		config:        config,
 		searchTimeout: timeout,
+		catalog:       catalog,
 		cache:         make(map[string]searchCacheEntry),
 	}
 }
 
+// Search: Last.fm discovers songs/artists → providers map playable URLs → only successful maps.
 func (ss *SearchService) Search(ctx context.Context, query string, page int) (*domain.SearchResponse, error) {
+	if ss.catalog == nil || !ss.catalog.Configured() {
+		return nil, fmt.Errorf("search: %w", domain.ErrUnavailable)
+	}
 	if len(ss.providers) == 0 {
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
 
-	parsed := ParseSearchQuery(query)
-	if parsed.Text == "" {
+	text := strings.TrimSpace(query)
+	if text == "" {
 		return domain.NewSearchResponse([]domain.Song{}, nil), nil
 	}
-
-	providers := ss.providers
-	if parsed.HasYearFilter() {
-		providers = yearFilterProviders(ss.providers)
-		if len(providers) == 0 {
-			return domain.NewSearchResponse([]domain.Song{}, nil), nil
-		}
+	if page < 1 {
+		page = 1
 	}
 
-	key := searchCacheKey(parsed, page)
+	key := searchCacheKey(text, page)
 	if hit := ss.cacheGet(key); hit != nil {
 		return cloneSearchResponse(hit), nil
 	}
@@ -91,7 +96,7 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 		if hit := ss.cacheGet(key); hit != nil {
 			return hit, nil
 		}
-		resp, err := ss.searchUncached(ctx, parsed, page, providers)
+		resp, err := ss.searchUncached(ctx, text, page)
 		if err != nil {
 			return nil, err
 		}
@@ -110,36 +115,128 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	return cloneSearchResponse(resp), nil
 }
 
-func (ss *SearchService) searchUncached(
-	ctx context.Context,
-	parsed ParsedSearchQuery,
-	page int,
-	providers []ports.IMusicProvider,
-) (*domain.SearchResponse, error) {
-	results := ss.collect(ctx, parsed, page, providers)
-	if len(results) == 0 {
-		return domain.NewSearchResponse([]domain.Song{}, nil), nil
+func (ss *SearchService) searchUncached(ctx context.Context, text string, page int) (*domain.SearchResponse, error) {
+	maxResults := ss.config.MaxResults
+	if maxResults <= 0 {
+		maxResults = constants.DefaultMaxSearchResults
+	}
+	limit := maxResults * searchCatalogOversample
+	if limit < maxResults {
+		limit = maxResults
 	}
 
-	results = dedupe(results)
-	scored := ss.ranker.RankResults(results, parsed.Text, ss.priorities)
+	pageData, err := ss.catalog.Search(ctx, text, page, limit)
+	if err != nil {
+		return nil, err
+	}
+	songs := ss.mapCatalogHits(ctx, pageData.Hits, maxResults)
+	resp := domain.NewSearchResponse(songs, pageData.Pagination)
 
-	n := ss.config.MaxResults
-	if n <= 0 {
-		n = len(scored)
+	// Discovery chrome only on page 1 — artists + top artist's albums.
+	if page == 1 && len(pageData.Artists) > 0 {
+		resp.Artists = make([]domain.SearchArtist, 0, len(pageData.Artists))
+		for _, a := range pageData.Artists {
+			resp.Artists = append(resp.Artists, domain.SearchArtist{Name: a.Name, Image: a.Image})
+		}
+		top := pageData.Artists[0].Name
+		if albums, err := ss.catalog.TopAlbums(ctx, top, catalogAlbumsForTopArtist); err == nil && len(albums) > 0 {
+			resp.Albums = albums
+		}
+	}
+	return resp, nil
+}
+
+// mapCatalogHits resolves Last.fm rows through providers in Last.fm order; drops misses.
+func (ss *SearchService) mapCatalogHits(ctx context.Context, hits []CatalogHit, capN int) []domain.Song {
+	if capN < 1 || len(hits) == 0 {
+		return nil
 	}
 
-	songs := make([]domain.Song, 0, n)
-	for i := 0; i < len(scored) && len(songs) < n; i++ {
-		s := scored[i].Result.Song
-		s.Link = utils.UpgradeHTTPS(s.Link)
-		s.Image = utils.UpgradeHTTPS(s.Image)
-		if !strings.HasPrefix(s.Link, "https://") {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type slot struct {
+		i    int
+		song domain.Song
+		ok   bool
+	}
+	ch := make(chan slot, len(hits))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, constants.DefaultResolveConcurrency)
+
+	for i, hit := range hits {
+		wg.Add(1)
+		go func(i int, hit CatalogHit) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				ch <- slot{i: i}
+				return
+			}
+			song, ok := ss.mapOne(ctx, hit)
+			ch <- slot{i: i, song: song, ok: ok}
+		}(i, hit)
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	byIdx := make(map[int]domain.Song, len(hits))
+	decided := make([]bool, len(hits))
+	for s := range ch {
+		decided[s.i] = true
+		if s.ok {
+			byIdx[s.i] = s.song
+		}
+		prefix := 0
+		for prefix < len(hits) && decided[prefix] {
+			prefix++
+		}
+		if out := pickMappedPrefix(byIdx, prefix, capN); len(out) >= capN {
+			cancel()
+			return out
+		}
+	}
+	return pickMappedPrefix(byIdx, len(hits), capN)
+}
+
+func pickMappedPrefix(byIdx map[int]domain.Song, n, capN int) []domain.Song {
+	seen := map[string]struct{}{}
+	out := make([]domain.Song, 0, capN)
+	for i := 0; i < n && len(out) < capN; i++ {
+		song, ok := byIdx[i]
+		if !ok {
 			continue
 		}
-		songs = append(songs, s)
+		k := SongKey(song.Artist, song.Title)
+		if k == "" {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, song)
 	}
-	return domain.NewSearchResponse(songs, pickPagination(scored)), nil
+	return out
+}
+
+func (ss *SearchService) mapOne(ctx context.Context, hit CatalogHit) (domain.Song, bool) {
+	songs, err := ss.SearchFirst(ctx, hit.Artist+" "+hit.Title, searchMapPeek)
+	if err != nil || len(songs) == 0 {
+		return domain.Song{}, false
+	}
+	song, ok := PickPlayableSong(hit.Artist, hit.Title, songs, "", searchMapPeek)
+	if !ok {
+		return domain.Song{}, false
+	}
+	if strings.TrimSpace(song.Image) == "" && strings.TrimSpace(hit.Image) != "" {
+		song.Image = hit.Image
+	}
+	return song, true
 }
 
 // SearchFirst fans out by priority and returns as soon as the best available
@@ -149,13 +246,10 @@ func (ss *SearchService) SearchFirst(ctx context.Context, query string, limit in
 		return nil, nil
 	}
 	if limit <= 0 {
-		limit = recommendSearchPeekDefault
+		limit = searchMapPeek
 	}
 
-	text := ParseSearchQuery(query).Text
-	if text == "" {
-		text = strings.TrimSpace(query)
-	}
+	text := strings.TrimSpace(query)
 	if text == "" {
 		return nil, nil
 	}
@@ -232,8 +326,6 @@ func (ss *SearchService) SearchFirst(ctx context.Context, query string, limit in
 	return best, nil
 }
 
-const recommendSearchPeekDefault = 8
-
 func playableSongs(results []domain.ProviderResult, limit int) []domain.Song {
 	songs := make([]domain.Song, 0, limit)
 	for i := range results {
@@ -251,110 +343,8 @@ func playableSongs(results []domain.ProviderResult, limit int) []domain.Song {
 	return songs
 }
 
-// collect fans out in parallel. Hard deadline = searchTimeout.
-// Soft deadline (half timeout, min 800ms): cancel stragglers once we have enough playable rows.
-// Enough for early cancel at soft = half MaxResults (min 8); at any time = MaxResults.
-// On early cancel we return immediately — the result channel is buffered, so stragglers finish without blocking us.
-func (ss *SearchService) collect(ctx context.Context, q ParsedSearchQuery, page int, providers []ports.IMusicProvider) []domain.ProviderResult {
-	n := len(providers)
-	if n == 0 {
-		return nil
-	}
-
-	maxResults := ss.config.MaxResults
-	if maxResults <= 0 {
-		maxResults = constants.DefaultMaxSearchResults
-	}
-	earlyMin := maxResults / 2
-	if earlyMin < 8 {
-		earlyMin = 8
-	}
-	if earlyMin > maxResults {
-		earlyMin = maxResults
-	}
-
-	pctx, cancel := context.WithTimeout(ctx, ss.searchTimeout)
-	defer cancel()
-
-	ch := make(chan []domain.ProviderResult, n)
-	for _, p := range providers {
-		go func(p ports.IMusicProvider) {
-			got, err := searchProvider(pctx, p, q, page)
-			if err != nil {
-				if !isBenignSearchErr(err) {
-					utils.GetLogger().Warn("provider search failed", "provider", p.Name(), "query", q.Text, "error", err)
-				}
-				ch <- nil
-				return
-			}
-			ch <- got
-		}(p)
-	}
-
-	softWait := ss.searchTimeout / 2
-	if softWait < searchCollectSoftMin {
-		softWait = searchCollectSoftMin
-	}
-	if softWait > ss.searchTimeout {
-		softWait = ss.searchTimeout
-	}
-	soft := time.NewTimer(softWait)
-	defer soft.Stop()
-	softC := soft.C
-
-	out := make([]domain.ProviderResult, 0, 40*n)
-	pending := n
-	for pending > 0 {
-		select {
-		case got := <-ch:
-			pending--
-			if len(got) > 0 {
-				out = append(out, got...)
-			}
-			need := maxResults
-			if softC == nil {
-				need = earlyMin
-			}
-			if playableUnique(out) >= need {
-				cancel()
-				return out
-			}
-		case <-softC:
-			softC = nil // disable; nil chan never selects
-			if playableUnique(out) >= earlyMin {
-				cancel()
-				return out
-			}
-		case <-pctx.Done():
-			cancel()
-			return out
-		}
-	}
-	return out
-}
-
-func playableUnique(results []domain.ProviderResult) int {
-	seen := make(map[string]struct{}, len(results))
-	for i := range results {
-		link := utils.UpgradeHTTPS(results[i].Song.Link)
-		if !strings.HasPrefix(link, "https://") {
-			continue
-		}
-		key := utils.NormalizeString(results[i].Song.Title) + "|" + utils.NormalizeString(results[i].Song.Artist)
-		if key == "|" {
-			continue
-		}
-		seen[key] = struct{}{}
-	}
-	return len(seen)
-}
-
-func searchCacheKey(q ParsedSearchQuery, page int) string {
-	key := utils.NormalizeString(q.Text) + "|" + strconv.Itoa(page)
-	if q.HasYearFilter() {
-		key += fmt.Sprintf("|y%d-%d", q.YearFrom, q.YearTo)
-	}
-	return key
+func searchCacheKey(text string, page int) string {
+	return utils.NormalizeString(text) + "|" + strconv.Itoa(page)
 }
 
 func (ss *SearchService) cacheGet(key string) *domain.SearchResponse {
@@ -384,95 +374,19 @@ func cloneSearchResponse(r *domain.SearchResponse) *domain.SearchResponse {
 		return nil
 	}
 	songs := append([]domain.Song(nil), r.Songs...)
+	artists := append([]domain.SearchArtist(nil), r.Artists...)
+	albums := append([]domain.ArtistAlbum(nil), r.Albums...)
 	var pag *domain.PaginationInfo
 	if r.Pagination != nil {
 		p := *r.Pagination
 		pag = &p
 	}
-	return domain.NewSearchResponse(songs, pag)
-}
-
-func searchProvider(ctx context.Context, p ports.IMusicProvider, q ParsedSearchQuery, page int) ([]domain.ProviderResult, error) {
-	if q.HasYearFilter() {
-		if yf, ok := p.(ports.YearFilterProvider); ok {
-			return yf.SearchWithPageYears(ctx, q.Text, page, q.YearFrom, q.YearTo)
-		}
-		return nil, nil
+	return &domain.SearchResponse{
+		Songs:      songs,
+		Artists:    artists,
+		Albums:     albums,
+		Pagination: pag,
 	}
-	return p.SearchWithPage(ctx, q.Text, page)
-}
-
-func yearFilterProviders(all []ports.IMusicProvider) []ports.IMusicProvider {
-	out := make([]ports.IMusicProvider, 0, len(all))
-	for _, p := range all {
-		if _, ok := p.(ports.YearFilterProvider); ok {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func dedupe(results []domain.ProviderResult) []domain.ProviderResult {
-	seen := make(map[string]int, len(results))
-	out := make([]domain.ProviderResult, 0, len(results))
-
-	for i := range results {
-		key := utils.NormalizeString(results[i].Song.Title) + "|" + utils.NormalizeString(results[i].Song.Artist)
-		if idx, ok := seen[key]; ok {
-			mergeDuplicate(&out[idx], &results[i])
-			continue
-		}
-		seen[key] = len(out)
-		out = append(out, results[i])
-	}
-	return out
-}
-
-// mergeDuplicate combines both sources into one row (cover, best link, combined provider).
-func mergeDuplicate(dst, src *domain.ProviderResult) {
-	if dst.Song.Image == "" && src.Song.Image != "" {
-		dst.Song.Image = src.Song.Image
-	}
-	if src.Song.Link != "" && (dst.Song.Link == "" || betterRank(src.ProviderRank, dst.ProviderRank)) {
-		dst.Song.Link = src.Song.Link
-	}
-	if src.ProviderRank > 0 && (dst.ProviderRank == 0 || src.ProviderRank < dst.ProviderRank) {
-		dst.ProviderRank = src.ProviderRank
-	}
-	if dst.Pagination == nil {
-		dst.Pagination = src.Pagination
-	}
-	mergeProvider(&dst.Provider, src.Provider)
-	mergeProvider(&dst.Song.Provider, src.Provider)
-}
-
-func betterRank(candidate, existing int) bool {
-	return candidate > 0 && (existing == 0 || candidate < existing)
-}
-
-func mergeProvider(dst *string, add string) {
-	if add == "" {
-		return
-	}
-	if *dst == "" {
-		*dst = add
-		return
-	}
-	for _, p := range strings.Split(*dst, "+") {
-		if p == add {
-			return
-		}
-	}
-	*dst += "+" + add
-}
-
-func pickPagination(scored []ScoredResult) *domain.PaginationInfo {
-	for _, s := range scored {
-		if s.Result.Pagination != nil {
-			return s.Result.Pagination
-		}
-	}
-	return nil
 }
 
 func isBenignSearchErr(err error) bool {

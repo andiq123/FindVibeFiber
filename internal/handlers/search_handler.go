@@ -57,6 +57,7 @@ func (sh *SearchHandler) Search(c fiber.Ctx) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no songs found"})
 	}
 
+	// Last.fm discovers the catalog; providers only map playable stream URLs.
 	// Fill art with a short budget — empty image beats a slow search response.
 	coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), searchCoverBudget)
 	sh.covers.FillSongs(coverCtx, response.Songs)

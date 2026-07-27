@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
+	"github.com/andiq123/FindVibeFiber/internal/core/services"
 )
 
 type stubSearch struct {
@@ -240,10 +241,10 @@ func TestResolvePicksBestAmongPeek(t *testing.T) {
 
 func TestIsPlayableMatchRejectsShortAmbiguousTitle(t *testing.T) {
 	got := domain.Song{Title: "Someone Like You", Artist: "Adele", Link: "https://a.mp3"}
-	if isPlayableMatch("Adele", "You", got) {
+	if services.IsPlayableMatch("Adele", "You", got) {
 		t.Fatal("short core must not Contains-match a longer title")
 	}
-	if !isPlayableMatch("Adele", "Someone Like You", got) {
+	if !services.IsPlayableMatch("Adele", "Someone Like You", got) {
 		t.Fatal("exact core should match")
 	}
 }

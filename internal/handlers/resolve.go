@@ -2,12 +2,12 @@ package handlers
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/constants"
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
+	"github.com/andiq123/FindVibeFiber/internal/core/services"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 )
 
@@ -113,7 +113,7 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 		if song, ok := h.resolveSnap(cacheKey); ok {
 			if seedKey := songKey(seed.artist, seed.title); seedKey == "" || songKey(song.Artist, song.Title) != seedKey {
 				// Re-validate cached rows — older caches may predate the title≠audio fix.
-				if isPlayableMatch(want.artist, want.title, song) {
+				if services.IsPlayableMatch(want.artist, want.title, song) {
 					return song, true
 				}
 			}
@@ -127,7 +127,7 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 	}
 
 	seedKey := songKey(seed.artist, seed.title)
-	song, ok := pickPlayableSong(want, songs, seedKey)
+	song, ok := services.PickPlayableSong(want.artist, want.title, songs, seedKey, recommendSearchPeek)
 	if !ok {
 		// Never return an unrelated playable hit under this want key — that stamped the wrong
 		// stream URL onto radio/explore/vault rows (UI title ≠ audio).
@@ -135,105 +135,6 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 	}
 	h.resolveStore(cacheKey, song)
 	return song, true
-}
-
-// isPlayableMatch: stream URL + artist/title overlap with what we asked for
-// (parity with iOS/Angular). Short cores must match exactly — "me"/"up" must not
-// latch onto a longer unrelated title via Contains.
-func isPlayableMatch(wantArtist, wantTitle string, got domain.Song) bool {
-	if !playableResolveLink(got.Link) {
-		return false
-	}
-	gotArtist := strings.TrimSpace(got.Artist)
-	gotTitle := strings.TrimSpace(got.Title)
-	if gotArtist == "" || gotTitle == "" {
-		return false
-	}
-
-	wantKey := songKey(wantArtist, wantTitle)
-	gotKey := songKey(gotArtist, gotTitle)
-	if wantKey != "" && wantKey == gotKey {
-		return true
-	}
-
-	wantArt := utils.NormalizeString(wantArtist)
-	gotArt := utils.NormalizeString(gotArtist)
-	wantCore := coreTitle(wantTitle)
-	gotCore := coreTitle(gotTitle)
-	if wantArt == "" || gotArt == "" || wantCore == "" || gotCore == "" {
-		return false
-	}
-
-	artistOK := artsOverlap(wantArt, gotArt)
-	titleOK := titleCoresOverlap(wantCore, gotCore)
-	return artistOK && titleOK
-}
-
-func artsOverlap(want, got string) bool {
-	if want == got {
-		return true
-	}
-	return strings.Contains(got, want) || strings.Contains(want, got)
-}
-
-func titleCoresOverlap(want, got string) bool {
-	if want == got {
-		return true
-	}
-	// Ambiguous short cores — require exact equality (handled above).
-	if len(want) < 4 || len(got) < 4 {
-		return false
-	}
-	return strings.Contains(got, want) || strings.Contains(want, got)
-}
-
-// pickPlayableSong chooses the strongest artist+title match in a provider peek.
-// Prefer exact songKey / exact core title / non-remix over a weaker Contains hit.
-func pickPlayableSong(want lastfmPair, songs []domain.Song, seedKey string) (domain.Song, bool) {
-	wantKey := songKey(want.artist, want.title)
-	wantCore := coreTitle(want.title)
-	wantArt := utils.NormalizeString(want.artist)
-
-	bestRank := -1
-	var best domain.Song
-	n := recommendSearchPeek
-	if n > len(songs) {
-		n = len(songs)
-	}
-	for i := 0; i < n; i++ {
-		s := songs[i]
-		gotKey := songKey(s.Artist, s.Title)
-		if gotKey != "" && gotKey == seedKey {
-			continue
-		}
-		if !isPlayableMatch(want.artist, want.title, s) {
-			continue
-		}
-		rank := 0
-		if wantKey != "" && gotKey == wantKey {
-			rank += 8
-		}
-		gotCore := coreTitle(s.Title)
-		gotArt := utils.NormalizeString(s.Artist)
-		if gotCore == wantCore {
-			rank += 4
-		}
-		if gotArt == wantArt {
-			rank += 2
-		}
-		if !isRemixy(s.Title) {
-			rank += 1
-		}
-		// Stable preference for earlier provider hits when ranks tie.
-		if rank > bestRank {
-			bestRank = rank
-			best = s
-		}
-	}
-	if bestRank < 0 {
-		return domain.Song{}, false
-	}
-	return best, true
 }
 
 func (h *RecommendHandler) resolveSnap(key string) (domain.Song, bool) {
@@ -269,13 +170,4 @@ func (h *RecommendHandler) resolveStore(key string, song domain.Song) {
 		}
 	}
 	h.resolveCache[key] = resolveEntry{song: song, at: time.Now()}
-}
-
-func playableResolveLink(link string) bool {
-	return strings.HasPrefix(strings.TrimSpace(link), "https://")
-}
-
-func isRemixy(title string) bool {
-	t := utils.NormalizeString(title)
-	return junkRe.MatchString(t) || parenRe.MatchString(t)
 }

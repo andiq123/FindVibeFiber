@@ -28,6 +28,9 @@ func HandleError(c fiber.Ctx, err error) error {
 	case errors.Is(err, domain.ErrInvalidInput):
 		status = http.StatusBadRequest
 		msg = domain.ErrInvalidInput.Error()
+	case errors.Is(err, domain.ErrUnavailable):
+		status = http.StatusServiceUnavailable
+		msg = domain.ErrUnavailable.Error()
 	}
 
 	return c.Status(status).JSON(fiber.Map{"error": msg})

@@ -68,8 +68,6 @@ type ExploreSection struct {
 
 var (
 	parenRe = regexp.MustCompile(`\([^)]*\)|\[[^\]]*\]`)
-	featRe  = regexp.MustCompile(`(?i)\s*(feat\.?|ft\.?|featuring)\s+.*$`)
-	junkRe  = regexp.MustCompile(`(?i)\b(original\s+mix|extended\s+mix|radio\s+edit|club\s+mix|remix|bootleg|edit|mix|version|remaster(ed)?|instrumental|karaoke|live|acoustic|dub)\b`)
 	spaceRe = regexp.MustCompile(`\s+`)
 )
 
@@ -539,18 +537,9 @@ func uniquePairs(pairs []lastfmPair, seed lastfmPair) []lastfmPair {
 
 // songKey collapses remix/feat variants: "Collide (Extended Mix)" ≈ "Collide".
 func songKey(artist, title string) string {
-	a, t := utils.NormalizeString(artist), coreTitle(title)
-	if a == "" || t == "" {
-		return ""
-	}
-	return a + "|" + t
+	return services.SongKey(artist, title)
 }
 
 func coreTitle(title string) string {
-	s := utils.NormalizeString(title)
-	s = parenRe.ReplaceAllString(s, " ")
-	s = featRe.ReplaceAllString(s, " ")
-	s = junkRe.ReplaceAllString(s, " ")
-	s = spaceRe.ReplaceAllString(strings.TrimSpace(s), " ")
-	return s
+	return services.CoreTitle(title)
 }

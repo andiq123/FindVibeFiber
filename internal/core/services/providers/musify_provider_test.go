@@ -51,16 +51,16 @@ func TestMusifyParseResults(t *testing.T) {
 	}
 }
 
-func TestMusifySearchURLYearFilters(t *testing.T) {
-	u := musifySearchURL("skrillex", 2, 2020, 2024)
+func TestMusifySearchURL(t *testing.T) {
+	u := musifySearchURL("skrillex", 2)
 	if !strings.Contains(u, "searchText=skrillex") || !strings.Contains(u, "type=song") {
 		t.Fatalf("base query missing: %s", u)
 	}
-	if !strings.Contains(u, "yearFrom=2020") || !strings.Contains(u, "yearTo=2024") {
-		t.Fatalf("year filters missing: %s", u)
-	}
 	if !strings.Contains(u, "page=2") {
 		t.Fatalf("page missing: %s", u)
+	}
+	if strings.Contains(u, "yearFrom") || strings.Contains(u, "yearTo") {
+		t.Fatalf("year filters should not be present: %s", u)
 	}
 }
 

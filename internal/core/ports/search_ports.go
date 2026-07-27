@@ -7,6 +7,7 @@ import (
 )
 
 type ISearchService interface {
+	// Search: Last.fm discovers songs/artists; providers map playable URLs; only mapped hits return.
 	Search(ctx context.Context, query string, page int) (*domain.SearchResponse, error)
 	// SearchFirst fans out providers and returns the highest-priority playable hit
 	// as soon as no higher-priority provider is still in flight (explore/radio resolve).
