@@ -198,27 +198,49 @@ func (ss *SearchService) searchUncached(
 	}
 
 	resp := domain.NewSearchResponse(nil, pageData.Pagination)
-	// Discovery chrome only on page 1 — artists + Last.fm albums (no cover wait; stream fills later on client).
-	if page == 1 {
-		if len(pageData.Artists) > 0 {
-			resp.Artists = make([]domain.SearchArtist, 0, len(pageData.Artists))
-			for _, a := range pageData.Artists {
-				resp.Artists = append(resp.Artists, domain.SearchArtist{Name: a.Name, Image: a.Image})
-			}
-		}
-		resp.Albums = ss.gatherAlbums(ctx, text, pageData.Artists)
-	}
-	if onMeta != nil {
-		if err := onMeta(domain.SearchProgress{
-			Artists:    append([]domain.SearchArtist(nil), resp.Artists...),
-			Albums:     append([]domain.ArtistAlbum(nil), resp.Albums...),
-			Pagination: resp.Pagination,
-		}); err != nil {
-			return resp, err
+	if page == 1 && len(pageData.Artists) > 0 {
+		resp.Artists = make([]domain.SearchArtist, 0, len(pageData.Artists))
+		for _, a := range pageData.Artists {
+			resp.Artists = append(resp.Artists, domain.SearchArtist{Name: a.Name, Image: a.Image})
 		}
 	}
 
-	resp.Songs = ss.mapCatalogHits(ctx, pageData.Hits, maxResults, onSong)
+	streaming := onMeta != nil || onSong != nil
+	if streaming {
+		// First paint immediately — do not wait on album Last.fm or covers.
+		if onMeta != nil {
+			if err := onMeta(domain.SearchProgress{
+				Artists:    append([]domain.SearchArtist(nil), resp.Artists...),
+				Pagination: resp.Pagination,
+			}); err != nil {
+				return resp, err
+			}
+		}
+
+		var albums []domain.ArtistAlbum
+		var albumWG sync.WaitGroup
+		if page == 1 {
+			albumWG.Add(1)
+			go func() {
+				defer albumWG.Done()
+				albums = ss.gatherAlbums(ctx, text, pageData.Artists)
+			}()
+		}
+
+		resp.Songs = ss.mapCatalogHits(ctx, pageData.Hits, maxResults, onSong)
+
+		albumWG.Wait()
+		resp.Albums = albums
+		if onMeta != nil && len(albums) > 0 {
+			_ = onMeta(domain.SearchProgress{Albums: append([]domain.ArtistAlbum(nil), albums...)})
+		}
+		return resp, nil
+	}
+
+	if page == 1 {
+		resp.Albums = ss.gatherAlbums(ctx, text, pageData.Artists)
+	}
+	resp.Songs = ss.mapCatalogHits(ctx, pageData.Hits, maxResults, nil)
 	return resp, nil
 }
 
@@ -377,22 +399,11 @@ func (ss *SearchService) mapOne(ctx context.Context, hit CatalogHit) (domain.Son
 	if !ok {
 		return domain.Song{}, false
 	}
-	// Prefer Last.fm catalog art (already fetched with search) over provider scrapes.
+	// Prefer catalog art; never wait on Lookup — stream emits now, client fills via /cover.
 	if img := hit.Image; hasRealCover(img) {
 		song.Image = img
 	} else if !hasRealCover(song.Image) {
 		song.Image = ""
-		// Parallel with other mappers — brief iTunes/Last.fm race, then emit.
-		if ss.covers != nil {
-			q := strings.TrimSpace(hit.Artist + " " + hit.Title)
-			if q != "" {
-				cctx, cancel := context.WithTimeout(ctx, 450*time.Millisecond)
-				defer cancel()
-				if filled := ss.covers.Lookup(cctx, q); filled != "" {
-					song.Image = filled
-				}
-			}
-		}
 	}
 	return song, true
 }

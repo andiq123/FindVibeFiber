@@ -81,22 +81,23 @@ func TestSearchWithProgressEmitsMetaThenSongs(t *testing.T) {
 	}
 	svc := NewSearchService([]ports.IMusicProvider{provider}, domain.DefaultSearchConfig(), time.Second, catalog)
 
-	var metaSeen bool
+	var metaN atomic.Int32
 	var songs int
+	var firstMetaHadAlbums bool
 	resp, err := svc.SearchWithProgress(
 		context.Background(),
 		"adele",
 		1,
 		func(p domain.SearchProgress) error {
-			metaSeen = true
-			if len(p.Artists) != 1 || p.Artists[0].Name != "Adele" {
-				t.Fatalf("meta artists: %+v", p.Artists)
-			}
-			if len(p.Albums) != 1 {
-				t.Fatalf("meta albums: %+v", p.Albums)
-			}
-			if songs != 0 {
-				t.Fatal("meta must arrive before songs")
+			n := metaN.Add(1)
+			if n == 1 {
+				if len(p.Artists) != 1 || p.Artists[0].Name != "Adele" {
+					t.Fatalf("meta artists: %+v", p.Artists)
+				}
+				firstMetaHadAlbums = len(p.Albums) > 0
+				if songs != 0 {
+					t.Fatal("first meta must arrive before songs")
+				}
 			}
 			return nil
 		},
@@ -111,14 +112,20 @@ func TestSearchWithProgressEmitsMetaThenSongs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !metaSeen {
+	if metaN.Load() < 1 {
 		t.Fatal("want meta callback")
+	}
+	if firstMetaHadAlbums {
+		t.Fatal("first meta must not wait on albums")
 	}
 	if songs == 0 || len(resp.Songs) == 0 {
 		t.Fatalf("want streamed songs, got songs=%d resp=%d", songs, len(resp.Songs))
 	}
 	if songs != len(resp.Songs) {
-		t.Fatalf("streamed %d != resp %d", songs, len(resp.Songs))
+		t.Fatalf("callback songs=%d resp=%d", songs, len(resp.Songs))
+	}
+	if len(resp.Albums) != 1 {
+		t.Fatalf("want albums on final response, got %+v", resp.Albums)
 	}
 }
 

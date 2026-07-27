@@ -106,19 +106,11 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 
 		var streamed int
 		onMeta := func(p domain.SearchProgress) error {
-			artists := append([]domain.SearchArtist(nil), p.Artists...)
-			albums := append([]domain.ArtistAlbum(nil), p.Albums...)
-			// Short budget only — never stall first byte for seconds.
-			if sh.covers != nil {
-				coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 500*time.Millisecond)
-				sh.covers.FillArtists(coverCtx, artists)
-				sh.covers.FillAlbums(coverCtx, albums)
-				cancel()
-			}
+			// No cover I/O on the stream path — flush chrome immediately.
 			if !write(searchStreamEvent{
 				Type:       "meta",
-				Artists:    artists,
-				Albums:     albums,
+				Artists:    p.Artists,
+				Albums:     p.Albums,
 				Pagination: p.Pagination,
 			}) {
 				return context.Canceled
@@ -126,8 +118,6 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 			return nil
 		}
 		onSong := func(song domain.Song) error {
-			// Flush as soon as mapped. Never block the stream on cover I/O —
-			// catalog art is already preferred in mapOne; client fills gaps via /cover.
 			s := song
 			if !services.HasRealCover(s.Image) {
 				s.Image = ""
