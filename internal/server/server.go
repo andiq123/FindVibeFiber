@@ -40,15 +40,15 @@ func NewServer(cfg config.ServerConfig) *Server {
 
 	app.Use(cors.New(middleware.NewCORS()))
 	app.Use(recover.New())
-	// Skip compress on NDJSON explore — buffering would defeat section streaming.
+	// Skip compress on NDJSON streams — buffering would defeat progressive emit.
 	app.Use(compress.New(compress.Config{
 		Next: func(c fiber.Ctx) bool {
 			path := c.Path()
 			if path == "/stream" {
 				return true
 			}
-			return path == "/explore" &&
-				(c.Query("stream") == "1" || strings.EqualFold(c.Query("stream"), "true"))
+			stream := c.Query("stream") == "1" || strings.EqualFold(c.Query("stream"), "true")
+			return stream && (path == "/explore" || path == "/search")
 		},
 	}))
 	app.Use(limiter.New(limiter.Config{

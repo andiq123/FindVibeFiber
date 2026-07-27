@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ func (s stubCatalog) Search(context.Context, string, int, int) (CatalogPage, err
 }
 func (s stubCatalog) TopAlbums(context.Context, string, int) ([]domain.ArtistAlbum, error) {
 	return s.albums, nil
+}
+func (s stubCatalog) AlbumSearch(context.Context, string, int) ([]domain.ArtistAlbum, error) {
+	return nil, nil
 }
 
 func TestSearchMapsCatalogThroughProviders(t *testing.T) {
@@ -54,6 +58,98 @@ func TestSearchMapsCatalogThroughProviders(t *testing.T) {
 	}
 	if resp.Pagination == nil || !resp.Pagination.HasNextPage {
 		t.Fatal("want lastfm pagination preserved")
+	}
+}
+
+func TestSearchWithProgressEmitsMetaThenSongs(t *testing.T) {
+	catalog := stubCatalog{
+		hits: []CatalogHit{
+			{Artist: "Adele", Title: "Hello"},
+			{Artist: "Adele", Title: "Someone Like You"},
+		},
+		artists: []CatalogArtist{{Name: "Adele", Image: "https://img"}},
+		albums:  []domain.ArtistAlbum{{Name: "25", Artist: "Adele"}},
+		pag:     &domain.PaginationInfo{CurrentPage: 1, HasNextPage: false},
+	}
+	provider := stubProvider{
+		name:     "Mp3pm",
+		priority: 8,
+		results: []domain.ProviderResult{
+			{Song: domain.Song{Title: "Hello", Artist: "Adele", Link: "https://a.mp3"}, Provider: "Mp3pm", ProviderRank: 1},
+			{Song: domain.Song{Title: "Someone Like You", Artist: "Adele", Link: "https://b.mp3"}, Provider: "Mp3pm", ProviderRank: 1},
+		},
+	}
+	svc := NewSearchService([]ports.IMusicProvider{provider}, domain.DefaultSearchConfig(), time.Second, catalog)
+
+	var metaSeen bool
+	var songs int
+	resp, err := svc.SearchWithProgress(
+		context.Background(),
+		"adele",
+		1,
+		func(p domain.SearchProgress) error {
+			metaSeen = true
+			if len(p.Artists) != 1 || p.Artists[0].Name != "Adele" {
+				t.Fatalf("meta artists: %+v", p.Artists)
+			}
+			if len(p.Albums) != 1 {
+				t.Fatalf("meta albums: %+v", p.Albums)
+			}
+			if songs != 0 {
+				t.Fatal("meta must arrive before songs")
+			}
+			return nil
+		},
+		func(song domain.Song) error {
+			songs++
+			if song.Link == "" {
+				t.Fatal("empty song link")
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !metaSeen {
+		t.Fatal("want meta callback")
+	}
+	if songs == 0 || len(resp.Songs) == 0 {
+		t.Fatalf("want streamed songs, got songs=%d resp=%d", songs, len(resp.Songs))
+	}
+	if songs != len(resp.Songs) {
+		t.Fatalf("streamed %d != resp %d", songs, len(resp.Songs))
+	}
+}
+
+func TestMergeDiscoveryAlbumsPrefersSearchAndArt(t *testing.T) {
+	got := mergeDiscoveryAlbums(
+		[]domain.ArtistAlbum{
+			{Name: "25", Artist: "Adele", Image: ""},
+			{Name: "Query Hit", Artist: "Adele", Image: "https://a.jpg"},
+		},
+		[]domain.ArtistAlbum{
+			{Name: "25", Artist: "Adele", Image: "https://25.jpg", Playcount: 99},
+			{Name: "21", Artist: "Adele", Image: "https://21.jpg"},
+		},
+		8,
+	)
+	if len(got) < 2 {
+		t.Fatalf("want merged albums, got %+v", got)
+	}
+	// Deduped 25 should pick up image from tops.
+	var twentyFive *domain.ArtistAlbum
+	for i := range got {
+		if got[i].Name == "25" {
+			twentyFive = &got[i]
+			break
+		}
+	}
+	if twentyFive == nil || twentyFive.Image != "https://25.jpg" {
+		t.Fatalf("want 25 with upgraded art, got %+v", twentyFive)
+	}
+	if strings.TrimSpace(got[0].Image) == "" {
+		t.Fatal("albums with art should sort first")
 	}
 }
 

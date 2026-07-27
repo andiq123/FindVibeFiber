@@ -22,6 +22,36 @@ func (s stubSearch) Search(_ context.Context, query string, _ int) (*domain.Sear
 	return domain.NewSearchResponse(nil, nil), nil
 }
 
+func (s stubSearch) SearchWithProgress(
+	ctx context.Context,
+	query string,
+	page int,
+	onMeta func(domain.SearchProgress) error,
+	onSong func(domain.Song) error,
+) (*domain.SearchResponse, error) {
+	resp, err := s.Search(ctx, query, page)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	if onMeta != nil {
+		if err := onMeta(domain.SearchProgress{
+			Artists:    resp.Artists,
+			Albums:     resp.Albums,
+			Pagination: resp.Pagination,
+		}); err != nil {
+			return resp, err
+		}
+	}
+	if onSong != nil {
+		for i := range resp.Songs {
+			if err := onSong(resp.Songs[i]); err != nil {
+				return resp, err
+			}
+		}
+	}
+	return resp, nil
+}
+
 func (s stubSearch) SearchFirst(ctx context.Context, query string, limit int) ([]domain.Song, error) {
 	resp, err := s.Search(ctx, query, 1)
 	if err != nil || resp == nil {

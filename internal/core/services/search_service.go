@@ -35,6 +35,7 @@ type catalogSearcher interface {
 	Configured() bool
 	Search(ctx context.Context, query string, page, limit int) (CatalogPage, error)
 	TopAlbums(ctx context.Context, artist string, limit int) ([]domain.ArtistAlbum, error)
+	AlbumSearch(ctx context.Context, query string, limit int) ([]domain.ArtistAlbum, error)
 }
 
 type SearchService struct {
@@ -72,6 +73,17 @@ func NewSearchService(
 
 // Search: Last.fm discovers songs/artists → providers map playable URLs → only successful maps.
 func (ss *SearchService) Search(ctx context.Context, query string, page int) (*domain.SearchResponse, error) {
+	return ss.SearchWithProgress(ctx, query, page, nil, nil)
+}
+
+// SearchWithProgress streams discovery meta, then each mapped song as soon as it succeeds.
+func (ss *SearchService) SearchWithProgress(
+	ctx context.Context,
+	query string,
+	page int,
+	onMeta func(domain.SearchProgress) error,
+	onSong func(domain.Song) error,
+) (*domain.SearchResponse, error) {
 	if ss.catalog == nil || !ss.catalog.Configured() {
 		return nil, fmt.Errorf("search: %w", domain.ErrUnavailable)
 	}
@@ -89,14 +101,29 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 
 	key := searchCacheKey(text, page)
 	if hit := ss.cacheGet(key); hit != nil {
-		return cloneSearchResponse(hit), nil
+		return ss.emitCached(hit, onMeta, onSong)
+	}
+
+	// Live progress must not wait on singleflight followers — only cache the leader result.
+	if onMeta != nil || onSong != nil {
+		resp, err := ss.searchUncached(ctx, text, page, onMeta, onSong)
+		if err != nil {
+			return nil, err
+		}
+		if resp != nil && len(resp.Songs) > 0 {
+			ss.cachePut(key, resp)
+		}
+		if resp == nil {
+			return domain.NewSearchResponse([]domain.Song{}, nil), nil
+		}
+		return resp, nil
 	}
 
 	v, err, _ := ss.sf.Do(key, func() (any, error) {
 		if hit := ss.cacheGet(key); hit != nil {
 			return hit, nil
 		}
-		resp, err := ss.searchUncached(ctx, text, page)
+		resp, err := ss.searchUncached(ctx, text, page, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -115,7 +142,38 @@ func (ss *SearchService) Search(ctx context.Context, query string, page int) (*d
 	return cloneSearchResponse(resp), nil
 }
 
-func (ss *SearchService) searchUncached(ctx context.Context, text string, page int) (*domain.SearchResponse, error) {
+func (ss *SearchService) emitCached(
+	hit *domain.SearchResponse,
+	onMeta func(domain.SearchProgress) error,
+	onSong func(domain.Song) error,
+) (*domain.SearchResponse, error) {
+	resp := cloneSearchResponse(hit)
+	if onMeta != nil {
+		if err := onMeta(domain.SearchProgress{
+			Artists:    append([]domain.SearchArtist(nil), resp.Artists...),
+			Albums:     append([]domain.ArtistAlbum(nil), resp.Albums...),
+			Pagination: resp.Pagination,
+		}); err != nil {
+			return resp, err
+		}
+	}
+	if onSong != nil {
+		for i := range resp.Songs {
+			if err := onSong(resp.Songs[i]); err != nil {
+				return resp, err
+			}
+		}
+	}
+	return resp, nil
+}
+
+func (ss *SearchService) searchUncached(
+	ctx context.Context,
+	text string,
+	page int,
+	onMeta func(domain.SearchProgress) error,
+	onSong func(domain.Song) error,
+) (*domain.SearchResponse, error) {
 	maxResults := ss.config.MaxResults
 	if maxResults <= 0 {
 		maxResults = constants.DefaultMaxSearchResults
@@ -129,25 +187,112 @@ func (ss *SearchService) searchUncached(ctx context.Context, text string, page i
 	if err != nil {
 		return nil, err
 	}
-	songs := ss.mapCatalogHits(ctx, pageData.Hits, maxResults)
-	resp := domain.NewSearchResponse(songs, pageData.Pagination)
 
-	// Discovery chrome only on page 1 — artists + top artist's albums.
-	if page == 1 && len(pageData.Artists) > 0 {
-		resp.Artists = make([]domain.SearchArtist, 0, len(pageData.Artists))
-		for _, a := range pageData.Artists {
-			resp.Artists = append(resp.Artists, domain.SearchArtist{Name: a.Name, Image: a.Image})
+	resp := domain.NewSearchResponse(nil, pageData.Pagination)
+	// Discovery chrome only on page 1 — artists + Last.fm albums (search + top artist).
+	if page == 1 {
+		if len(pageData.Artists) > 0 {
+			resp.Artists = make([]domain.SearchArtist, 0, len(pageData.Artists))
+			for _, a := range pageData.Artists {
+				resp.Artists = append(resp.Artists, domain.SearchArtist{Name: a.Name, Image: a.Image})
+			}
 		}
-		top := pageData.Artists[0].Name
-		if albums, err := ss.catalog.TopAlbums(ctx, top, catalogAlbumsForTopArtist); err == nil && len(albums) > 0 {
-			resp.Albums = albums
+		resp.Albums = ss.gatherAlbums(ctx, text, pageData.Artists)
+	}
+	if onMeta != nil {
+		if err := onMeta(domain.SearchProgress{
+			Artists:    append([]domain.SearchArtist(nil), resp.Artists...),
+			Albums:     append([]domain.ArtistAlbum(nil), resp.Albums...),
+			Pagination: resp.Pagination,
+		}); err != nil {
+			return resp, err
 		}
 	}
+
+	resp.Songs = ss.mapCatalogHits(ctx, pageData.Hits, maxResults, onSong)
 	return resp, nil
 }
 
-// mapCatalogHits resolves Last.fm rows through providers in Last.fm order; drops misses.
-func (ss *SearchService) mapCatalogHits(ctx context.Context, hits []CatalogHit, capN int) []domain.Song {
+// gatherAlbums merges album.search (query) with top artist's top albums; prefers rows with art.
+func (ss *SearchService) gatherAlbums(ctx context.Context, query string, artists []CatalogArtist) []domain.ArtistAlbum {
+	var searched, tops []domain.ArtistAlbum
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		searched, _ = ss.catalog.AlbumSearch(ctx, query, catalogAlbumsForTopArtist)
+	}()
+	if len(artists) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tops, _ = ss.catalog.TopAlbums(ctx, artists[0].Name, catalogAlbumsForTopArtist)
+		}()
+	}
+	wg.Wait()
+	return mergeDiscoveryAlbums(searched, tops, catalogAlbumsForTopArtist)
+}
+
+func mergeDiscoveryAlbums(searched, tops []domain.ArtistAlbum, limit int) []domain.ArtistAlbum {
+	if limit < 1 {
+		limit = catalogAlbumsForTopArtist
+	}
+	seen := map[string]int{} // key → index in out
+	out := make([]domain.ArtistAlbum, 0, limit)
+
+	add := func(a domain.ArtistAlbum) {
+		name := strings.TrimSpace(a.Name)
+		if name == "" || strings.EqualFold(name, "(null)") || strings.EqualFold(name, "null") {
+			return
+		}
+		artist := strings.TrimSpace(a.Artist)
+		key := utils.NormalizeString(artist) + "|" + utils.NormalizeString(name)
+		if key == "|" {
+			return
+		}
+		if i, ok := seen[key]; ok {
+			// Upgrade stub/empty art when a later source has a real image.
+			if strings.TrimSpace(out[i].Image) == "" && strings.TrimSpace(a.Image) != "" {
+				out[i].Image = a.Image
+			}
+			if a.Playcount > out[i].Playcount {
+				out[i].Playcount = a.Playcount
+			}
+			return
+		}
+		if len(out) >= limit {
+			return
+		}
+		seen[key] = len(out)
+		out = append(out, a)
+	}
+
+	for _, a := range searched {
+		add(a)
+	}
+	for _, a := range tops {
+		add(a)
+	}
+
+	// Stable: albums with cover art first so the rail looks filled.
+	sort.SliceStable(out, func(i, j int) bool {
+		hi := strings.TrimSpace(out[i].Image) != ""
+		hj := strings.TrimSpace(out[j].Image) != ""
+		if hi != hj {
+			return hi
+		}
+		return false
+	})
+	return out
+}
+
+// mapCatalogHits resolves Last.fm rows through providers; emits each success immediately.
+func (ss *SearchService) mapCatalogHits(
+	ctx context.Context,
+	hits []CatalogHit,
+	capN int,
+	onSong func(domain.Song) error,
+) []domain.Song {
 	if capN < 1 || len(hits) == 0 {
 		return nil
 	}
@@ -156,7 +301,6 @@ func (ss *SearchService) mapCatalogHits(ctx context.Context, hits []CatalogHit, 
 	defer cancel()
 
 	type slot struct {
-		i    int
 		song domain.Song
 		ok   bool
 	}
@@ -164,54 +308,33 @@ func (ss *SearchService) mapCatalogHits(ctx context.Context, hits []CatalogHit, 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, constants.DefaultResolveConcurrency)
 
-	for i, hit := range hits {
+	for _, hit := range hits {
 		wg.Add(1)
-		go func(i int, hit CatalogHit) {
+		go func(hit CatalogHit) {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				ch <- slot{i: i}
+				ch <- slot{}
 				return
 			}
 			song, ok := ss.mapOne(ctx, hit)
-			ch <- slot{i: i, song: song, ok: ok}
-		}(i, hit)
+			ch <- slot{song: song, ok: ok}
+		}(hit)
 	}
 	go func() {
 		wg.Wait()
 		close(ch)
 	}()
 
-	byIdx := make(map[int]domain.Song, len(hits))
-	decided := make([]bool, len(hits))
-	for s := range ch {
-		decided[s.i] = true
-		if s.ok {
-			byIdx[s.i] = s.song
-		}
-		prefix := 0
-		for prefix < len(hits) && decided[prefix] {
-			prefix++
-		}
-		if out := pickMappedPrefix(byIdx, prefix, capN); len(out) >= capN {
-			cancel()
-			return out
-		}
-	}
-	return pickMappedPrefix(byIdx, len(hits), capN)
-}
-
-func pickMappedPrefix(byIdx map[int]domain.Song, n, capN int) []domain.Song {
 	seen := map[string]struct{}{}
 	out := make([]domain.Song, 0, capN)
-	for i := 0; i < n && len(out) < capN; i++ {
-		song, ok := byIdx[i]
-		if !ok {
+	for s := range ch {
+		if !s.ok {
 			continue
 		}
-		k := SongKey(song.Artist, song.Title)
+		k := SongKey(s.song.Artist, s.song.Title)
 		if k == "" {
 			continue
 		}
@@ -219,7 +342,19 @@ func pickMappedPrefix(byIdx map[int]domain.Song, n, capN int) []domain.Song {
 			continue
 		}
 		seen[k] = struct{}{}
-		out = append(out, song)
+		out = append(out, s.song)
+		if onSong != nil {
+			if err := onSong(s.song); err != nil {
+				cancel()
+				return out
+			}
+		}
+		if len(out) >= capN {
+			cancel()
+			for range ch {
+			}
+			return out
+		}
 	}
 	return out
 }
@@ -233,8 +368,11 @@ func (ss *SearchService) mapOne(ctx context.Context, hit CatalogHit) (domain.Son
 	if !ok {
 		return domain.Song{}, false
 	}
-	if strings.TrimSpace(song.Image) == "" && strings.TrimSpace(hit.Image) != "" {
-		song.Image = hit.Image
+	// Prefer Last.fm catalog art (already fetched with search) over provider scrapes.
+	if img := hit.Image; hasRealCover(img) {
+		song.Image = img
+	} else if !hasRealCover(song.Image) {
+		song.Image = ""
 	}
 	return song, true
 }

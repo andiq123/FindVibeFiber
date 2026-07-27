@@ -142,6 +142,46 @@ func (l *LastFMCatalog) TopAlbums(ctx context.Context, artist string, limit int)
 	return mapCatalogAlbums(artist, rows, limit), nil
 }
 
+// AlbumSearch returns Last.fm album.search matches for the query.
+func (l *LastFMCatalog) AlbumSearch(ctx context.Context, query string, limit int) ([]domain.ArtistAlbum, error) {
+	if !l.Configured() {
+		return nil, fmt.Errorf("lastfm catalog: %w", domain.ErrUnavailable)
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	if limit < 1 {
+		limit = catalogAlbumsForTopArtist
+	}
+	q := url.Values{
+		"method":  {"album.search"},
+		"album":   {query},
+		"api_key": {l.apiKey},
+		"format":  {"json"},
+		"limit":   {strconv.Itoa(limit)},
+	}
+	raw, err := l.getJSON(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Results struct {
+			AlbumMatches struct {
+				Album json.RawMessage `json:"album"`
+			} `json:"albummatches"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	rows, err := decodeCatalogAlbums(payload.Results.AlbumMatches.Album)
+	if err != nil {
+		return nil, err
+	}
+	return mapCatalogAlbums("", rows, limit), nil
+}
+
 func (l *LastFMCatalog) artistMatches(ctx context.Context, query string, limit int) []CatalogArtist {
 	rows, err := l.artistSearchRows(ctx, query, limit)
 	if err != nil || len(rows) == 0 {

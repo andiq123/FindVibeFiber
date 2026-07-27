@@ -53,8 +53,8 @@ func InitializeHandlers(db *gorm.DB, cfg *config.AppConfig) Handlers {
 	searchConfig := domain.DefaultSearchConfig()
 	searchConfig.MaxResults = cfg.Search.MaxResults
 
-	covers := services.NewCoverService(httpClient)
 	lastfmKey := os.Getenv("LASTFM_API_KEY")
+	covers := services.NewCoverService(httpClient, lastfmKey)
 	catalog := services.NewLastFMCatalog(httpClient, lastfmKey)
 	searchSvc := services.NewSearchService(
 		[]ports.IMusicProvider{mp3pm, mp3mn, musify},

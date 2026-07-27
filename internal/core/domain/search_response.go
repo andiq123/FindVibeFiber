@@ -13,6 +13,13 @@ type SearchResponse struct {
 	Pagination *PaginationInfo `json:"pagination,omitempty"`
 }
 
+// SearchProgress is discovery chrome emitted before / while songs map (stream path).
+type SearchProgress struct {
+	Artists    []SearchArtist
+	Albums     []ArtistAlbum
+	Pagination *PaginationInfo
+}
+
 func NewSearchResponse(songs []Song, pagination *PaginationInfo) *SearchResponse {
 	return &SearchResponse{
 		Songs:      songs,
