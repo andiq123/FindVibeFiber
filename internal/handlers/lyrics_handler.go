@@ -20,8 +20,8 @@ var (
 )
 
 const (
-	lyricsHitTTL  = 6 * time.Hour
-	lyricsMissTTL = 30 * time.Minute
+	lyricsHitTTL   = 6 * time.Hour
+	lyricsMissTTL  = 30 * time.Minute
 	lyricsCacheCap = 256
 )
 

@@ -21,7 +21,7 @@ func NewFavoritesHandler(favoritesService ports.IFavoritesService) *FavoritesHan
 
 func (fh *FavoritesHandler) AddFavorite(c fiber.Ctx) error {
 	userId := c.Params("userId")
-	
+
 	if err := utils.ValidateUserID(userId); err != nil {
 		return HandleError(c, err)
 	}

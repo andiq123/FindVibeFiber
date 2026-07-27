@@ -7,6 +7,7 @@ import (
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
+	"github.com/andiq123/FindVibeFiber/internal/utils"
 )
 
 type FavoritesService struct {
@@ -27,8 +28,8 @@ func (fs *FavoritesService) AddFavorite(ctx context.Context, userId string, song
 		return fmt.Errorf("add favorite: %w", err)
 	}
 	song.UserID = user.ID
-	song.Link = upgradeFavoriteURL(song.Link)
-	song.Image = upgradeFavoriteURL(song.Image)
+	song.Link = utils.UpgradeHTTPS(song.Link)
+	song.Image = utils.UpgradeHTTPS(song.Image)
 	if song.Link == "" || !strings.HasPrefix(song.Link, "https://") {
 		return fmt.Errorf("add favorite: %w", domain.ErrInvalidInput)
 	}
@@ -36,17 +37,6 @@ func (fs *FavoritesService) AddFavorite(ctx context.Context, userId string, song
 		return fmt.Errorf("add favorite: %w", err)
 	}
 	return nil
-}
-
-func upgradeFavoriteURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "http://") {
-		return "https://" + strings.TrimPrefix(raw, "http://")
-	}
-	if strings.HasPrefix(raw, "//") {
-		return "https:" + raw
-	}
-	return raw
 }
 
 func (fs *FavoritesService) DeleteFavorite(ctx context.Context, songId string) error {

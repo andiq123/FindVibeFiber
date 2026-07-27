@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/andiq123/FindVibeFiber/internal/utils"
 )
 
 const maxHTMLBytes = 1 << 20
@@ -176,14 +177,7 @@ func isBlockedBody(body []byte) bool {
 }
 
 func absoluteURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "//") {
-		return "https:" + raw
-	}
-	if strings.HasPrefix(raw, "http://") {
-		return "https://" + strings.TrimPrefix(raw, "http://")
-	}
-	return raw
+	return utils.UpgradeHTTPS(raw)
 }
 
 // playableLink — stream URLs we hand to iOS AVPlayer (https only).

@@ -82,8 +82,17 @@ func (fr *FavoritesRepository) UpdateFavoriteLink(ctx context.Context, songId, l
 	return fr.updateFavoriteField(ctx, songId, "link", link)
 }
 
-// ponytail: don't use RowsAffected — Postgres reports 0 when value unchanged.
+// Update first; only Count when RowsAffected is 0 (unchanged value or missing row).
 func (fr *FavoritesRepository) updateFavoriteField(ctx context.Context, songId, column, value string) error {
+	res := fr.DB.WithContext(ctx).Model(&domain.FavoriteSong{}).
+		Where("id = ?", songId).
+		Update(column, value)
+	if res.Error != nil {
+		return fmt.Errorf("favorites repository: update %s failed: %w", column, res.Error)
+	}
+	if res.RowsAffected > 0 {
+		return nil
+	}
 	var n int64
 	if err := fr.DB.WithContext(ctx).Model(&domain.FavoriteSong{}).
 		Where("id = ?", songId).Count(&n).Error; err != nil {
@@ -91,11 +100,6 @@ func (fr *FavoritesRepository) updateFavoriteField(ctx context.Context, songId, 
 	}
 	if n == 0 {
 		return domain.ErrNotFound
-	}
-	if err := fr.DB.WithContext(ctx).Model(&domain.FavoriteSong{}).
-		Where("id = ?", songId).
-		Update(column, value).Error; err != nil {
-		return fmt.Errorf("favorites repository: update %s failed: %w", column, err)
 	}
 	return nil
 }

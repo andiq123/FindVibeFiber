@@ -132,8 +132,8 @@ func (ss *SearchService) searchUncached(
 	songs := make([]domain.Song, 0, n)
 	for i := 0; i < len(scored) && len(songs) < n; i++ {
 		s := scored[i].Result.Song
-		s.Link = upgradeHTTPS(s.Link)
-		s.Image = upgradeHTTPS(s.Image)
+		s.Link = utils.UpgradeHTTPS(s.Link)
+		s.Image = utils.UpgradeHTTPS(s.Image)
 		if !strings.HasPrefix(s.Link, "https://") {
 			continue
 		}
@@ -241,8 +241,8 @@ func playableSongs(results []domain.ProviderResult, limit int) []domain.Song {
 			break
 		}
 		s := results[i].Song
-		s.Link = upgradeHTTPS(s.Link)
-		s.Image = upgradeHTTPS(s.Image)
+		s.Link = utils.UpgradeHTTPS(s.Link)
+		s.Image = utils.UpgradeHTTPS(s.Image)
 		if !strings.HasPrefix(s.Link, "https://") {
 			continue
 		}
@@ -251,20 +251,10 @@ func playableSongs(results []domain.ProviderResult, limit int) []domain.Song {
 	return songs
 }
 
-func upgradeHTTPS(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "http://") {
-		return "https://" + strings.TrimPrefix(raw, "http://")
-	}
-	if strings.HasPrefix(raw, "//") {
-		return "https:" + raw
-	}
-	return raw
-}
-
 // collect fans out in parallel. Hard deadline = searchTimeout.
 // Soft deadline (half timeout, min 800ms): cancel stragglers once we have enough playable rows.
 // Enough for early cancel at soft = half MaxResults (min 8); at any time = MaxResults.
+// On early cancel we return immediately — the result channel is buffered, so stragglers finish without blocking us.
 func (ss *SearchService) collect(ctx context.Context, q ParsedSearchQuery, page int, providers []ports.IMusicProvider) []domain.ProviderResult {
 	n := len(providers)
 	if n == 0 {
@@ -310,65 +300,33 @@ func (ss *SearchService) collect(ctx context.Context, q ParsedSearchQuery, page 
 	}
 	soft := time.NewTimer(softWait)
 	defer soft.Stop()
+	softC := soft.C
 
 	out := make([]domain.ProviderResult, 0, 40*n)
 	pending := n
-	softOpen := true
-
-	drain := func() {
-		for pending > 0 {
-			got := <-ch
+	for pending > 0 {
+		select {
+		case got := <-ch:
 			pending--
 			if len(got) > 0 {
 				out = append(out, got...)
 			}
-		}
-	}
-
-	take := func(got []domain.ProviderResult) {
-		pending--
-		if len(got) > 0 {
-			out = append(out, got...)
-		}
-	}
-
-	for pending > 0 {
-		if softOpen {
-			select {
-			case got := <-ch:
-				take(got)
-				if playableUnique(out) >= maxResults {
-					cancel()
-					drain()
-					return out
-				}
-			case <-soft.C:
-				softOpen = false
-				if playableUnique(out) >= earlyMin {
-					cancel()
-					drain()
-					return out
-				}
-			case <-pctx.Done():
+			need := maxResults
+			if softC == nil {
+				need = earlyMin
+			}
+			if playableUnique(out) >= need {
 				cancel()
-				drain()
 				return out
 			}
-			continue
-		}
-
-		select {
-		case got := <-ch:
-			take(got)
-			// Past soft deadline — finish once we have a useful page.
+		case <-softC:
+			softC = nil // disable; nil chan never selects
 			if playableUnique(out) >= earlyMin {
 				cancel()
-				drain()
 				return out
 			}
 		case <-pctx.Done():
 			cancel()
-			drain()
 			return out
 		}
 	}
@@ -378,7 +336,7 @@ func (ss *SearchService) collect(ctx context.Context, q ParsedSearchQuery, page 
 func playableUnique(results []domain.ProviderResult) int {
 	seen := make(map[string]struct{}, len(results))
 	for i := range results {
-		link := upgradeHTTPS(results[i].Song.Link)
+		link := utils.UpgradeHTTPS(results[i].Song.Link)
 		if !strings.HasPrefix(link, "https://") {
 			continue
 		}
