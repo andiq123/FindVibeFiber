@@ -129,7 +129,7 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 			// Flush as soon as mapped. Never block the stream on cover I/O —
 			// catalog art is already preferred in mapOne; client fills gaps via /cover.
 			s := song
-			if strings.TrimSpace(s.Image) == "" || strings.Contains(s.Image, "2a96cbd8b46e442fc41c2b86b821562f") {
+			if !services.HasRealCover(s.Image) {
 				s.Image = ""
 			}
 			streamed++

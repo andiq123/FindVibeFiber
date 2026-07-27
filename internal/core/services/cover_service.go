@@ -48,14 +48,16 @@ func NewCoverService(client *http.Client, lastfmKey string) *CoverService {
 	}
 }
 
-// hasRealCover is true for a usable https image (not empty, not Last.fm stub).
-func hasRealCover(image string) bool {
+// HasRealCover is true for a usable http(s) image (not empty, not Last.fm stub).
+func HasRealCover(image string) bool {
 	u := strings.TrimSpace(image)
 	if u == "" || strings.Contains(u, lastfmStubMarker) {
 		return false
 	}
 	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
 }
+
+func hasRealCover(image string) bool { return HasRealCover(image) }
 
 // Lookup returns artwork for a free-text query: cache → race Last.fm + Apple → first hit.
 func (cs *CoverService) Lookup(ctx context.Context, q string) string {

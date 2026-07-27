@@ -387,10 +387,10 @@ func (ss *SearchService) mapOne(ctx context.Context, hit CatalogHit) (domain.Son
 			q := strings.TrimSpace(hit.Artist + " " + hit.Title)
 			if q != "" {
 				cctx, cancel := context.WithTimeout(ctx, 450*time.Millisecond)
+				defer cancel()
 				if filled := ss.covers.Lookup(cctx, q); filled != "" {
 					song.Image = filled
 				}
-				cancel()
 			}
 		}
 	}
