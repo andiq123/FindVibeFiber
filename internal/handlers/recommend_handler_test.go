@@ -172,11 +172,8 @@ func TestResolveStrictRejectsWeakHits(t *testing.T) {
 		}},
 	}
 	want := lastfmPair{"Nero", "Collide"}
-	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, true, false); ok {
-		t.Fatal("strict should reject artist-only / wrong-title hit")
-	}
-	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false, false); ok {
-		t.Fatal("loose must also reject wrong-title hit (prevents title≠audio)")
+	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false); ok {
+		t.Fatal("must reject artist-only / wrong-title hit")
 	}
 }
 
@@ -189,9 +186,51 @@ func TestResolveAcceptsTitleArtistOverlap(t *testing.T) {
 		}},
 	}
 	want := lastfmPair{"Nero", "Promises"}
-	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false, false)
+	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false)
 	if !ok || got.Link != "https://ok.mp3" {
 		t.Fatalf("expected overlap match, got %+v ok=%v", got, ok)
+	}
+}
+
+func TestResolvePicksBestAmongPeek(t *testing.T) {
+	h := &RecommendHandler{
+		search: stubSearch{hits: map[string][]domain.Song{
+			"magnat, feoctist auzeam, gheorghe": {
+				{Title: "Miagy", Artist: "Someone", Link: "https://wrong.mp3"},
+				{Title: "Auzeam, Gheorghe (Remix)", Artist: "magnat, feoctist", Link: "https://remix.mp3"},
+				{Title: "Auzeam, Gheorghe", Artist: "magnat, feoctist", Link: "https://right.mp3"},
+			},
+		}},
+	}
+	want := lastfmPair{"magnat, feoctist", "Auzeam, Gheorghe"}
+	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false)
+	if !ok || got.Link != "https://right.mp3" {
+		t.Fatalf("want clean title hit, got %+v ok=%v", got, ok)
+	}
+}
+
+func TestIsPlayableMatchRejectsShortAmbiguousTitle(t *testing.T) {
+	got := domain.Song{Title: "Someone Like You", Artist: "Adele", Link: "https://a.mp3"}
+	if isPlayableMatch("Adele", "You", got) {
+		t.Fatal("short core must not Contains-match a longer title")
+	}
+	if !isPlayableMatch("Adele", "Someone Like You", got) {
+		t.Fatal("exact core should match")
+	}
+}
+
+func TestResolveIgnoresStaleWrongCache(t *testing.T) {
+	h := NewRecommendHandler(nil, "", stubSearch{hits: map[string][]domain.Song{
+		"nero promises": {
+			{Title: "Promises", Artist: "Nero", Link: "https://ok.mp3"},
+		},
+	}}, nil)
+	want := lastfmPair{"Nero", "Promises"}
+	key := songKey(want.artist, want.title)
+	h.resolveStore(key, domain.Song{Title: "Miagy", Artist: "Wrong", Link: "https://stale.mp3"})
+	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false)
+	if !ok || got.Link != "https://ok.mp3" {
+		t.Fatalf("stale wrong cache must be revalidated, got %+v ok=%v", got, ok)
 	}
 }
 

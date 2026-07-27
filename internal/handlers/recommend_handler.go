@@ -91,9 +91,9 @@ type RecommendHandler struct {
 	recommendMu    sync.Mutex
 	recommendCache map[string]recommendEntry
 
-	pairsMu    sync.Mutex
-	pairsCache map[string]pairsEntry
-	pairsSF    singleflight.Group
+	pairsMu     sync.Mutex
+	pairsCache  map[string]pairsEntry
+	pairsSF     singleflight.Group
 	recommendSF singleflight.Group
 
 	resolveMu    sync.Mutex
@@ -536,16 +536,16 @@ func (h *RecommendHandler) GetSimilarArtists(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"artists": names})
 }
 
-// GET /resolve?artist=&title=&strict=1 → one playable Song (search + fuzzy match).
-// strict=1: require artist+title overlap (Spotify import) — no "first hit" fallback.
+// GET /resolve?artist=&title= → one playable Song whose artist+title match the request.
+// `strict` is accepted for client compat; resolve always requires a real title+artist match
+// (never a first-hit / artist-only fallback — that stamped wrong audio onto vault rows).
 func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
 	artist := strings.TrimSpace(c.Query("artist"))
 	title := strings.TrimSpace(c.Query("title"))
 	if artist == "" || title == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and title required"})
 	}
-	strict := c.Query("strict") == "1" || strings.EqualFold(c.Query("strict"), "true")
-	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{}, strict, false)
+	song, ok := h.resolveOne(c.Context(), lastfmPair{artist: artist, title: title}, lastfmPair{}, false)
 	if !ok {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
 	}
@@ -1151,7 +1151,7 @@ func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, see
 				ch <- slot{i: i}
 				return
 			}
-			song, ok := h.resolveOne(ctx, p, seed, false, bypassCache)
+			song, ok := h.resolveOne(ctx, p, seed, bypassCache)
 			ch <- slot{i: i, song: song, ok: ok}
 		}(i, p)
 	}
@@ -1205,15 +1205,15 @@ func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int) []
 	return out
 }
 
-func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair, strict, bypassCache bool) (domain.Song, bool) {
+func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair, bypassCache bool) (domain.Song, bool) {
 	cacheKey := songKey(want.artist, want.title)
-	if strict {
-		cacheKey += "|strict"
-	}
 	if !bypassCache {
 		if song, ok := h.resolveSnap(cacheKey); ok {
 			if seedKey := songKey(seed.artist, seed.title); seedKey == "" || songKey(song.Artist, song.Title) != seedKey {
-				return song, true
+				// Re-validate cached rows — older caches may predate the title≠audio fix.
+				if isPlayableMatch(want.artist, want.title, song) {
+					return song, true
+				}
 			}
 		}
 	}
@@ -1224,39 +1224,114 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 		return domain.Song{}, false
 	}
 
+	seedKey := songKey(seed.artist, seed.title)
+	song, ok := pickPlayableSong(want, songs, seedKey)
+	if !ok {
+		// Never return an unrelated playable hit under this want key — that stamped the wrong
+		// stream URL onto radio/explore/vault rows (UI title ≠ audio).
+		return domain.Song{}, false
+	}
+	h.resolveStore(cacheKey, song)
+	return song, true
+}
+
+// isPlayableMatch: stream URL + artist/title overlap with what we asked for
+// (parity with iOS/Angular). Short cores must match exactly — "me"/"up" must not
+// latch onto a longer unrelated title via Contains.
+func isPlayableMatch(wantArtist, wantTitle string, got domain.Song) bool {
+	if !playableResolveLink(got.Link) {
+		return false
+	}
+	gotArtist := strings.TrimSpace(got.Artist)
+	gotTitle := strings.TrimSpace(got.Title)
+	if gotArtist == "" || gotTitle == "" {
+		return false
+	}
+
+	wantKey := songKey(wantArtist, wantTitle)
+	gotKey := songKey(gotArtist, gotTitle)
+	if wantKey != "" && wantKey == gotKey {
+		return true
+	}
+
+	wantArt := utils.NormalizeString(wantArtist)
+	gotArt := utils.NormalizeString(gotArtist)
+	wantCore := coreTitle(wantTitle)
+	gotCore := coreTitle(gotTitle)
+	if wantArt == "" || gotArt == "" || wantCore == "" || gotCore == "" {
+		return false
+	}
+
+	artistOK := artsOverlap(wantArt, gotArt)
+	titleOK := titleCoresOverlap(wantCore, gotCore)
+	return artistOK && titleOK
+}
+
+func artsOverlap(want, got string) bool {
+	if want == got {
+		return true
+	}
+	return strings.Contains(got, want) || strings.Contains(want, got)
+}
+
+func titleCoresOverlap(want, got string) bool {
+	if want == got {
+		return true
+	}
+	// Ambiguous short cores — require exact equality (handled above).
+	if len(want) < 4 || len(got) < 4 {
+		return false
+	}
+	return strings.Contains(got, want) || strings.Contains(want, got)
+}
+
+// pickPlayableSong chooses the strongest artist+title match in a provider peek.
+// Prefer exact songKey / exact core title / non-remix over a weaker Contains hit.
+func pickPlayableSong(want lastfmPair, songs []domain.Song, seedKey string) (domain.Song, bool) {
+	wantKey := songKey(want.artist, want.title)
 	wantCore := coreTitle(want.title)
 	wantArt := utils.NormalizeString(want.artist)
-	seedKey := songKey(seed.artist, seed.title)
+
+	bestRank := -1
+	var best domain.Song
 	n := recommendSearchPeek
 	if n > len(songs) {
 		n = len(songs)
 	}
-
-	var fallback domain.Song
 	for i := 0; i < n; i++ {
 		s := songs[i]
-		if !playableResolveLink(s.Link) || songKey(s.Artist, s.Title) == seedKey {
+		gotKey := songKey(s.Artist, s.Title)
+		if gotKey != "" && gotKey == seedKey {
 			continue
 		}
+		if !isPlayableMatch(want.artist, want.title, s) {
+			continue
+		}
+		rank := 0
+		if wantKey != "" && gotKey == wantKey {
+			rank += 8
+		}
 		gotCore := coreTitle(s.Title)
-		art := utils.NormalizeString(s.Artist)
-		artistOK := art == wantArt || strings.Contains(art, wantArt) || strings.Contains(wantArt, art)
-		titleOK := gotCore == wantCore || strings.Contains(gotCore, wantCore) || strings.Contains(wantCore, gotCore)
-		if artistOK && titleOK && !isRemixy(s.Title) {
-			h.resolveStore(cacheKey, s)
-			return s, true
+		gotArt := utils.NormalizeString(s.Artist)
+		if gotCore == wantCore {
+			rank += 4
 		}
-		if artistOK && titleOK && fallback.Link == "" {
-			fallback = s
+		if gotArt == wantArt {
+			rank += 2
+		}
+		if !isRemixy(s.Title) {
+			rank += 1
+		}
+		// Stable preference for earlier provider hits when ranks tie.
+		if rank > bestRank {
+			bestRank = rank
+			best = s
 		}
 	}
-	if playableResolveLink(fallback.Link) {
-		h.resolveStore(cacheKey, fallback)
-		return fallback, true
+	if bestRank < 0 {
+		return domain.Song{}, false
 	}
-	// Never return an unrelated playable hit under this want key — that stamped the wrong
-	// stream URL onto radio/explore rows (UI title ≠ audio).
-	return domain.Song{}, false
+	return best, true
 }
 
 func (h *RecommendHandler) resolveSnap(key string) (domain.Song, bool) {
