@@ -11,7 +11,7 @@ import (
 func TestExploreStreamEventNDJSON(t *testing.T) {
 	cached := false
 	sec := ExploreSection{
-		ID: "romania", Title: "Romania", Subtitle: "Hot this week",
+		ID: "romania", Title: "Romania", Subtitle: "Charts at home",
 		Songs: []domain.Song{{Id: "1", Title: "A", Artist: "B", Link: "https://x/a.mp3"}},
 	}
 	lines := []exploreStreamEvent{

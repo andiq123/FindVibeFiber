@@ -34,15 +34,16 @@ const (
 	pairsCacheCap       = 64
 
 	// ponytail: region hard-coded until settings grow a country picker
-	exploreCountry = "Romania"
-	exploreTTL     = 6 * time.Hour
+	exploreCountry  = "Romania"
+	exploreTTL      = 24 * time.Hour
+	exploreCacheAge = "86400" // Cache-Control max-age for fresh chart payloads
 	// Smaller shelves → faster first paint when streaming section-by-section.
 	exploreCap   = 8
 	exploreFetch = 12
 	// One stuck chart must not block the rest of the stream.
 	exploreSectionBudget = 12 * time.Second
 	exploreCoverBudget   = 2500 * time.Millisecond
-	exploreStreamBudget  = 60 * time.Second
+	exploreStreamBudget  = 75 * time.Second
 
 	resolveTTL      = 15 * time.Minute
 	resolveCacheCap = 256
@@ -109,7 +110,7 @@ func NewRecommendHandler(client *http.Client, apiKey string, search ports.ISearc
 	}
 }
 
-// GET /explore?refresh=1 → chart shelves (Romania / Worldwide / vibes), server-cached 6h.
+// GET /explore?refresh=1 → chart shelves (Romania / Worldwide / vibes), server-cached 24h.
 // GET /explore?stream=1 → NDJSON: meta, then one section line as each shelf is ready, then done.
 func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 	if h.apiKey == "" {
@@ -123,7 +124,7 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 
 	if !refresh {
 		if sections, ok := h.exploreSnap(true); ok {
-			c.Set("Cache-Control", "public, max-age=21600")
+			c.Set("Cache-Control", "public, max-age="+exploreCacheAge)
 			return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": true})
 		}
 	}
@@ -142,7 +143,7 @@ func (h *RecommendHandler) GetExplore(c fiber.Ctx) error {
 		}
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "No playable charts right now"})
 	}
-	c.Set("Cache-Control", "public, max-age=21600")
+	c.Set("Cache-Control", "public, max-age="+exploreCacheAge)
 	return c.JSON(fiber.Map{"country": exploreCountry, "sections": sections, "cached": false})
 }
 
@@ -260,8 +261,8 @@ func (h *RecommendHandler) coldExploreShared(
 	}
 	v, err, shared := h.exploreSF.Do(key, func() (any, error) {
 		sections, err := h.buildExplore(ctx, onSection)
-		// ponytail: don't poison the 6h cache with a half-empty build
-		if len(sections) >= 2 {
+		// Keep a useful day cache even if one shelf fails — empty builds never overwrite.
+		if len(sections) >= 1 {
 			h.exploreStore(sections)
 		}
 		return sections, err
@@ -279,18 +280,24 @@ type exploreJob struct {
 func (h *RecommendHandler) buildExplore(ctx context.Context, onSection func(ExploreSection) error) ([]ExploreSection, error) {
 	limit := strconv.Itoa(exploreFetch)
 	jobs := []exploreJob{
-		{"romania", "Romania", "Hot this week", url.Values{
+		{"romania", "Romania", "Charts at home", url.Values{
 			"method": {"geo.getTopTracks"}, "country": {exploreCountry}, "limit": {limit},
 		}},
-		// ponytail: no free TikTok RO API — YouTube Music trending RO is the closest viral proxy
-		{"viral-ro", "Viral Romania", "Hot trends right now", nil},
+		// Closest free viral proxy for RO — YouTube Music trending via kworb.
+		{"viral-ro", "Viral Romania", "Rising right now", nil},
 		{"worldwide", "Worldwide", "Global chart", url.Values{
 			"method": {"chart.getTopTracks"}, "limit": {limit},
 		}},
-		{"pop", "Pop", "Trending vibe", url.Values{
+		{"pop", "Pop", "Everywhere right now", url.Values{
 			"method": {"tag.getTopTracks"}, "tag": {"pop"}, "limit": {limit},
 		}},
-		{"electronic", "Electronic", "Trending vibe", url.Values{
+		{"hip-hop", "Hip-Hop", "Worldwide vibe", url.Values{
+			"method": {"tag.getTopTracks"}, "tag": {"hip-hop"}, "limit": {limit},
+		}},
+		{"rock", "Rock", "Worldwide vibe", url.Values{
+			"method": {"tag.getTopTracks"}, "tag": {"rock"}, "limit": {limit},
+		}},
+		{"electronic", "Electronic", "Worldwide vibe", url.Values{
 			"method": {"tag.getTopTracks"}, "tag": {"electronic"}, "limit": {limit},
 		}},
 	}
