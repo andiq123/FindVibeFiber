@@ -33,16 +33,17 @@ func NewSearchHandler(
 }
 
 type searchStreamEvent struct {
-	Type       string                `json:"type"`
-	Artists    []domain.SearchArtist `json:"artists,omitempty"`
-	Albums     []domain.ArtistAlbum  `json:"albums,omitempty"`
+	Type       string                 `json:"type"`
+	Artists    []domain.SearchArtist  `json:"artists,omitempty"`
+	Albums     []domain.ArtistAlbum   `json:"albums,omitempty"`
 	Pagination *domain.PaginationInfo `json:"pagination,omitempty"`
-	Song       *domain.Song          `json:"song,omitempty"`
-	Error      string                `json:"error,omitempty"`
+	Song       *domain.Song           `json:"song,omitempty"`
+	Songs      []domain.Song          `json:"songs,omitempty"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 // GET /search?q=&page= → JSON SearchResponse.
-// GET /search?q=&stream=1 → NDJSON: meta → song* → done (songs as each maps).
+// GET /search?q=&stream=1 → NDJSON: meta → song|songs* → done (mapped hits as ready).
 func (sh *SearchHandler) Search(c fiber.Ctx) error {
 	query := c.Query("q")
 	if query == "" {
@@ -95,6 +96,7 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 	c.Set("Content-Type", "application/x-ndjson")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
 		enc := json.NewEncoder(w)
@@ -106,6 +108,24 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 		}
 
 		var streamed int
+		var buf []domain.Song
+		flushSongs := func() bool {
+			if len(buf) == 0 {
+				return true
+			}
+			batch := buf
+			buf = nil
+			if len(batch) == 1 {
+				if !write(searchStreamEvent{Type: "song", Song: &batch[0]}) {
+					return false
+				}
+			} else if !write(searchStreamEvent{Type: "songs", Songs: batch}) {
+				return false
+			}
+			streamed += len(batch)
+			return true
+		}
+
 		onMeta := func(p domain.SearchProgress) error {
 			artists := append([]domain.SearchArtist(nil), p.Artists...)
 			albums := append([]domain.ArtistAlbum(nil), p.Albums...)
@@ -125,17 +145,26 @@ func (sh *SearchHandler) streamSearch(c fiber.Ctx, query string, page int) error
 		}
 		onSong := func(song domain.Song) error {
 			songs := []domain.Song{song}
-			coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), searchSongCoverBudget)
-			sh.covers.FillSongs(coverCtx, songs)
-			cancel()
-			streamed++
-			if !write(searchStreamEvent{Type: "song", Song: &songs[0]}) {
-				return context.Canceled
+			// Skip cover wait when Last.fm already attached art — keeps the stream snappy.
+			if strings.TrimSpace(songs[0].Image) == "" || strings.Contains(songs[0].Image, "2a96cbd8b46e442fc41c2b86b821562f") {
+				coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), searchSongCoverBudget)
+				sh.covers.FillSongs(coverCtx, songs)
+				cancel()
+			}
+			buf = append(buf, songs[0])
+			// First hit flushes immediately; later hits batch up to 5 for fewer UI rebuilds.
+			if streamed == 0 || len(buf) >= 5 {
+				if !flushSongs() {
+					return context.Canceled
+				}
 			}
 			return nil
 		}
 
 		resp, err := sh.searchService.SearchWithProgress(c.Context(), query, page, onMeta, onSong)
+		if !flushSongs() {
+			return
+		}
 		if err != nil && streamed == 0 {
 			_ = write(searchStreamEvent{Type: "error", Error: "Couldn't search"})
 			return
