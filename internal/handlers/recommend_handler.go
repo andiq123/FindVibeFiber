@@ -326,7 +326,7 @@ func (h *RecommendHandler) buildExplore(ctx context.Context, onSection func(Expl
 			cancel()
 			continue
 		}
-		songs := h.resolveN(sectionCtx, pairs, lastfmPair{}, exploreCap, false)
+		songs := h.resolveN(sectionCtx, pairs, lastfmPair{}, exploreCap, false, false)
 		cancel()
 		if len(songs) == 0 {
 			continue
@@ -644,7 +644,8 @@ func (h *RecommendHandler) GetAlbumTracks(c fiber.Ctx) error {
 	if len(pairs) < capN {
 		capN = len(pairs)
 	}
-	songs := h.resolveN(ctx, pairs, lastfmPair{}, capN, false)
+	// Album tracks share one artist — recommend diversity would stall at 1 song and burn the whole budget.
+	songs := h.resolveN(ctx, pairs, lastfmPair{}, capN, false, true)
 	if len(songs) == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Couldn't resolve album tracks"})
 	}
@@ -732,7 +733,7 @@ func (h *RecommendHandler) GetRecommend(c fiber.Ctx) error {
 			pairs = append(pairs[off:], pairs[:off]...)
 		}
 
-		songs := h.resolveN(ctx, pairs, seed, capN, refresh)
+		songs := h.resolveN(ctx, pairs, seed, capN, refresh, false)
 		// ponytail: Last.fm often misses collab credits — fall back to our search by artist name.
 		if len(songs) == 0 {
 			songs = h.searchFallback(ctx, artists, seed)
@@ -1335,7 +1336,7 @@ func lastfmBestImage(images []lastfmImage) string {
 	var first string
 	for _, im := range images {
 		u := strings.TrimSpace(im.URL)
-		if u == "" {
+		if u == "" || isLastfmStubImage(u) {
 			continue
 		}
 		if strings.HasPrefix(u, "http://") {
@@ -1352,6 +1353,11 @@ func lastfmBestImage(images []lastfmImage) string {
 		}
 	}
 	return first
+}
+
+// Last.fm's grey star placeholder — treat as missing art.
+func isLastfmStubImage(u string) bool {
+	return strings.Contains(u, "2a96cbd8b46e442fc41c2b86b821562f")
 }
 
 func lastfmPlaycount(v any) int64 {
@@ -1436,10 +1442,17 @@ func coreTitle(title string) string {
 }
 
 func (h *RecommendHandler) resolve(ctx context.Context, pairs []lastfmPair, seed lastfmPair) []domain.Song {
-	return h.resolveN(ctx, pairs, seed, recommendResolveCap, false)
+	return h.resolveN(ctx, pairs, seed, recommendResolveCap, false, false)
 }
 
-func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, seed lastfmPair, cap int, bypassCache bool) []domain.Song {
+func (h *RecommendHandler) resolveN(
+	ctx context.Context,
+	pairs []lastfmPair,
+	seed lastfmPair,
+	cap int,
+	bypassCache bool,
+	sameArtistOK bool,
+) []domain.Song {
 	if cap < 1 {
 		cap = recommendResolveCap
 	}
@@ -1491,15 +1504,15 @@ func (h *RecommendHandler) resolveN(ctx context.Context, pairs []lastfmPair, see
 		for prefix < len(pairs) && decided[prefix] {
 			prefix++
 		}
-		if out := pickResolved(byIdx, prefix, seed, cap); len(out) >= cap {
+		if out := pickResolved(byIdx, prefix, seed, cap, sameArtistOK); len(out) >= cap {
 			cancel()
 			return out
 		}
 	}
-	return pickResolved(byIdx, len(pairs), seed, cap)
+	return pickResolved(byIdx, len(pairs), seed, cap, sameArtistOK)
 }
 
-func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int) []domain.Song {
+func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int, sameArtistOK bool) []domain.Song {
 	seen := map[string]bool{songKey(seed.artist, seed.title): true}
 	seenArtists := map[string]bool{}
 	out := make([]domain.Song, 0, cap)
@@ -1513,8 +1526,8 @@ func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int) []
 			continue
 		}
 		art := utils.NormalizeString(song.Artist)
-		// Soft diversity: skip second track from same artist while we still have room to fill later.
-		if seenArtists[art] && len(out) < cap-1 && i < n-1 {
+		// Soft diversity for radio/because — albums must keep same-artist tracks.
+		if !sameArtistOK && seenArtists[art] && len(out) < cap-1 && i < n-1 {
 			continue
 		}
 		seen[k] = true

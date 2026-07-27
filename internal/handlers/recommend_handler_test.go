@@ -139,6 +139,23 @@ func TestResolveSkipsSeedAndRemixDupes(t *testing.T) {
 	}
 }
 
+func TestPickResolvedAlbumKeepsSameArtist(t *testing.T) {
+	byIdx := map[int]domain.Song{
+		0: {Title: "One", Artist: "Nero", Link: "https://a.mp3"},
+		1: {Title: "Two", Artist: "Nero", Link: "https://b.mp3"},
+		2: {Title: "Three", Artist: "Nero", Link: "https://c.mp3"},
+	}
+	// Diversity keeps the first hit and may admit the last slot — not a full album.
+	diverse := pickResolved(byIdx, 3, lastfmPair{}, 3, false)
+	if len(diverse) >= 3 {
+		t.Fatalf("diversity must not keep a full same-artist album, got %+v", diverse)
+	}
+	album := pickResolved(byIdx, 3, lastfmPair{}, 3, true)
+	if len(album) != 3 {
+		t.Fatalf("album mode must keep same-artist tracks, got %+v", album)
+	}
+}
+
 func TestExploreCacheRoundTrip(t *testing.T) {
 	h := &RecommendHandler{}
 	if _, ok := h.exploreSnap(true); ok {
