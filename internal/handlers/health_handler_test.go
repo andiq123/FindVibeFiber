@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -26,6 +27,9 @@ func TestProbeMusifyMarkersPast64KB(t *testing.T) {
 		if r.Header.Get("Referer") == "" {
 			t.Errorf("missing Referer")
 		}
+		if r.Header.Get("Sec-Fetch-Mode") != "navigate" {
+			t.Errorf("missing browser Sec-Fetch-Mode")
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(html))
 	}))
@@ -35,7 +39,7 @@ func TestProbeMusifyMarkersPast64KB(t *testing.T) {
 	st := hh.probe(sourceSpec{
 		Name:    "Musify",
 		Host:    "musify.club",
-		URL:     srv.URL + "/en/search?searchText=test&type=song",
+		URL:     srv.URL + "/en/search?searchText=nero&type=song",
 		Referer: srv.URL + "/en/",
 		Markers: [][]byte{
 			[]byte(`tracklist__row`),
@@ -62,5 +66,45 @@ func TestProbeFailsWhenMarkersMissing(t *testing.T) {
 	})
 	if st.OK {
 		t.Fatal("expected not OK without markers")
+	}
+}
+
+func TestProbeRetriesAfterChallengeThenOK(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		attempt := n
+		mu.Unlock()
+		if attempt == 1 {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><body>Just a moment… cf-challenge</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><div class="tracklist__row"></div><a href="/track/pl/1/x.mp3"></a></body></html>`))
+	}))
+	t.Cleanup(srv.Close)
+
+	hh := NewHealthHandler(srv.Client())
+	st := hh.probe(sourceSpec{
+		Name:    "Musify",
+		URL:     srv.URL,
+		Referer: srv.URL + "/en/",
+		Markers: [][]byte{
+			[]byte(`tracklist__row`),
+			[]byte(`/track/pl/`),
+		},
+		Retries: 1,
+	})
+	if !st.OK {
+		t.Fatal("expected OK after retry past challenge page")
+	}
+	mu.Lock()
+	got := n
+	mu.Unlock()
+	if got < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", got)
 	}
 }
