@@ -1249,25 +1249,13 @@ func (h *RecommendHandler) resolveOne(ctx context.Context, want, seed lastfmPair
 		if artistOK && titleOK && fallback.Link == "" {
 			fallback = s
 		}
-		// Loose path only: artist match alone can fill fallback (radio/explore).
-		if !strict && artistOK && fallback.Link == "" {
-			fallback = s
-		}
 	}
 	if playableResolveLink(fallback.Link) {
 		h.resolveStore(cacheKey, fallback)
 		return fallback, true
 	}
-	if strict {
-		return domain.Song{}, false
-	}
-	// Last: first playable result that isn't the seed song.
-	for _, s := range songs[:n] {
-		if playableResolveLink(s.Link) && songKey(s.Artist, s.Title) != seedKey {
-			h.resolveStore(cacheKey, s)
-			return s, true
-		}
-	}
+	// Never return an unrelated playable hit under this want key — that stamped the wrong
+	// stream URL onto radio/explore rows (UI title ≠ audio).
 	return domain.Song{}, false
 }
 

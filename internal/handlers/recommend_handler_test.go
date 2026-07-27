@@ -175,9 +175,23 @@ func TestResolveStrictRejectsWeakHits(t *testing.T) {
 	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, true, false); ok {
 		t.Fatal("strict should reject artist-only / wrong-title hit")
 	}
+	if _, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false, false); ok {
+		t.Fatal("loose must also reject wrong-title hit (prevents title≠audio)")
+	}
+}
+
+func TestResolveAcceptsTitleArtistOverlap(t *testing.T) {
+	h := &RecommendHandler{
+		search: stubSearch{hits: map[string][]domain.Song{
+			"nero promises": {
+				{Title: "Promises (Original Mix)", Artist: "Nero", Link: "https://ok.mp3"},
+			},
+		}},
+	}
+	want := lastfmPair{"Nero", "Promises"}
 	got, ok := h.resolveOne(context.Background(), want, lastfmPair{}, false, false)
-	if !ok || got.Link != "https://wrong.mp3" {
-		t.Fatalf("loose still accepts first hit, got %+v ok=%v", got, ok)
+	if !ok || got.Link != "https://ok.mp3" {
+		t.Fatalf("expected overlap match, got %+v ok=%v", got, ok)
 	}
 }
 
