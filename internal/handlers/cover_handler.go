@@ -27,6 +27,12 @@ func (ch *CoverHandler) GetCover(c fiber.Ctx) error {
 		return HandleError(c, err)
 	}
 
+	img := ch.covers.Lookup(c.Context(), q)
+	if img != "" {
+		c.Set("Cache-Control", "public, max-age=86400")
+	} else {
+		c.Set("Cache-Control", "public, max-age=900")
+	}
 	// ponytail: optional fill — empty art beats 500 when Apple flakes
-	return c.JSON(fiber.Map{"image": ch.covers.Lookup(c.Context(), q)})
+	return c.JSON(fiber.Map{"image": img})
 }

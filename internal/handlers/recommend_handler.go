@@ -689,7 +689,8 @@ func (h *RecommendHandler) GetResolve(c fiber.Ctx) error {
 	return c.JSON(songs[0])
 }
 
-// GET /stream?artist=&title= → fresh-resolve then proxy CDN bytes (fallback when the phone can't hotlink).
+// GET /stream?artist=&title= → proxy CDN bytes (fallback when the phone can't hotlink).
+// Cache-first resolve; re-resolve once if the cached link is dead.
 // Not the default play path — clients must try the direct song.link first.
 func (h *RecommendHandler) GetStream(c fiber.Ctx) error {
 	artist := strings.TrimSpace(c.Query("artist"))
@@ -704,32 +705,32 @@ func (h *RecommendHandler) GetStream(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 45*time.Second)
 	defer cancel()
 
-	song, ok := h.resolveOne(ctx, lastfmPair{artist: artist, title: title}, lastfmPair{}, true)
+	want := lastfmPair{artist: artist, title: title}
+	song, ok := h.resolveOne(ctx, want, lastfmPair{}, false)
 	if !ok {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
-	}
-	link := strings.TrimSpace(song.Link)
-	upstreamURL, err := url.Parse(link)
-	if err != nil || !streamProxyAllowed(upstreamURL) {
-		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "stream host not allowed"})
+		song, ok = h.resolveOne(ctx, want, lastfmPair{}, true)
+		if !ok {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no match"})
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
-	if err != nil {
-		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't open stream"})
-	}
-	applyStreamUpstreamHeaders(req, upstreamURL)
-	if rng := strings.TrimSpace(c.Get("Range")); rng != "" {
-		req.Header.Set("Range", rng)
-	}
-
-	resp, err := h.upstream.Do(req)
-	if err != nil {
-		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't fetch stream"})
-	}
-	if resp.StatusCode >= 400 {
-		resp.Body.Close()
-		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Upstream stream failed"})
+	rng := strings.TrimSpace(c.Get("Range"))
+	resp, err := h.openStreamUpstream(ctx, song.Link, rng)
+	if err != nil || resp == nil || resp.StatusCode >= 400 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		fresh, freshed := h.resolveOne(ctx, want, lastfmPair{}, true)
+		if !freshed || strings.TrimSpace(fresh.Link) == "" || fresh.Link == song.Link {
+			return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't fetch stream"})
+		}
+		resp, err = h.openStreamUpstream(ctx, fresh.Link, rng)
+		if err != nil || resp == nil || resp.StatusCode >= 400 {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Upstream stream failed"})
+		}
 	}
 
 	ct := resp.Header.Get("Content-Type")
@@ -752,6 +753,23 @@ func (h *RecommendHandler) GetStream(c fiber.Ctx) error {
 		_, _ = io.Copy(w, io.LimitReader(resp.Body, 80<<20)) // hard cap ~80MB
 		_ = w.Flush()
 	})
+}
+
+func (h *RecommendHandler) openStreamUpstream(ctx context.Context, link, rangeHeader string) (*http.Response, error) {
+	link = strings.TrimSpace(link)
+	upstreamURL, err := url.Parse(link)
+	if err != nil || !streamProxyAllowed(upstreamURL) {
+		return nil, fmt.Errorf("stream host not allowed")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyStreamUpstreamHeaders(req, upstreamURL)
+	if rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+	return h.upstream.Do(req)
 }
 
 func streamProxyAllowed(u *url.URL) bool {

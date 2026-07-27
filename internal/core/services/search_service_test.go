@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +64,108 @@ func TestSearchFirstReturnsHighestPriorityProvider(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Link != "https://pm.mp3" {
 		t.Fatalf("want Mp3pm first-wins, got %+v", got)
+	}
+}
+
+// Lower priority finishes first — still wait for higher-priority playable hit.
+func TestSearchFirstWaitsForHigherPriority(t *testing.T) {
+	high := stubProvider{
+		name:     "Mp3pm",
+		priority: 8,
+		delay:    40 * time.Millisecond,
+		results: []domain.ProviderResult{
+			{Song: domain.Song{Title: "Hello", Artist: "Adele", Link: "https://pm.mp3"}, Provider: "Mp3pm", ProviderRank: 1},
+		},
+	}
+	low := stubProvider{
+		name:     "Mp3mn",
+		priority: 7,
+		results: []domain.ProviderResult{
+			{Song: domain.Song{Title: "Hello", Artist: "Adele", Link: "https://mn.mp3"}, Provider: "Mp3mn", ProviderRank: 1},
+		},
+	}
+	svc := NewSearchService([]ports.IMusicProvider{low, high}, domain.DefaultSearchConfig(), time.Second)
+	start := time.Now()
+	got, err := svc.SearchFirst(context.Background(), "adele hello", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Link != "https://pm.mp3" {
+		t.Fatalf("want higher-priority link, got %+v", got)
+	}
+	if time.Since(start) < 35*time.Millisecond {
+		t.Fatalf("returned before higher-priority provider could finish")
+	}
+}
+
+func TestSearchCachesIdenticalQuery(t *testing.T) {
+	var hits atomic.Int32
+	p := countingProvider{
+		stubProvider: stubProvider{
+			name:     "Mp3pm",
+			priority: 8,
+			results: []domain.ProviderResult{
+				{Song: domain.Song{Title: "Hello", Artist: "Adele", Link: "https://a.mp3"}, Provider: "Mp3pm", ProviderRank: 1},
+			},
+		},
+		hits: &hits,
+	}
+	svc := NewSearchService([]ports.IMusicProvider{p}, domain.DefaultSearchConfig(), time.Second)
+	a, err := svc.Search(context.Background(), "Adele Hello", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := svc.Search(context.Background(), "adele  hello", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("want 1 provider hit, got %d", hits.Load())
+	}
+	if len(a.Songs) != 1 || len(b.Songs) != 1 || a.Songs[0].Link != b.Songs[0].Link {
+		t.Fatalf("cache clone mismatch: %+v vs %+v", a.Songs, b.Songs)
+	}
+	// Mutating one response must not poison the cache.
+	a.Songs[0].Image = "https://poison"
+	c, err := svc.Search(context.Background(), "adele hello", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Songs[0].Image == "https://poison" {
+		t.Fatal("cache was mutated via returned slice")
+	}
+}
+
+func TestSearchCollectEarlyWhenMaxResults(t *testing.T) {
+	cfg := domain.DefaultSearchConfig()
+	cfg.MaxResults = 2
+	fast := stubProvider{
+		name:     "Mp3pm",
+		priority: 8,
+		results: []domain.ProviderResult{
+			{Song: domain.Song{Title: "A", Artist: "X", Link: "https://a.mp3"}, Provider: "Mp3pm", ProviderRank: 1},
+			{Song: domain.Song{Title: "B", Artist: "Y", Link: "https://b.mp3"}, Provider: "Mp3pm", ProviderRank: 2},
+		},
+	}
+	slow := stubProvider{
+		name:     "Mp3mn",
+		priority: 7,
+		delay:    200 * time.Millisecond,
+		results: []domain.ProviderResult{
+			{Song: domain.Song{Title: "C", Artist: "Z", Link: "https://c.mp3"}, Provider: "Mp3mn", ProviderRank: 1},
+		},
+	}
+	svc := NewSearchService([]ports.IMusicProvider{fast, slow}, cfg, time.Second)
+	start := time.Now()
+	resp, err := svc.Search(context.Background(), "test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 150*time.Millisecond {
+		t.Fatalf("should early-finish once MaxResults playable, took %v", time.Since(start))
+	}
+	if len(resp.Songs) != 2 {
+		t.Fatalf("want 2 songs, got %d", len(resp.Songs))
 	}
 }
 
@@ -136,4 +239,15 @@ func (s stubProvider) SearchWithPage(ctx context.Context, query string, page int
 	return s.results, nil
 }
 
+type countingProvider struct {
+	stubProvider
+	hits *atomic.Int32
+}
+
+func (c countingProvider) SearchWithPage(ctx context.Context, query string, page int) ([]domain.ProviderResult, error) {
+	c.hits.Add(1)
+	return c.stubProvider.SearchWithPage(ctx, query, page)
+}
+
 var _ ports.IMusicProvider = stubProvider{}
+var _ ports.IMusicProvider = countingProvider{}

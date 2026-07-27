@@ -11,6 +11,7 @@ import (
 
 	"github.com/andiq123/FindVibeFiber/internal/core/domain"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -18,7 +19,8 @@ const (
 	// ponytail: empty iTunes misses must not lock out retries for a full day
 	coverMissTTL  = 15 * time.Minute
 	coverFillConc = 8
-	coverCacheMax = 10_000 // ponytail: wipe when huge; LRU if hit rate matters
+	coverCacheMax = 10_000
+	coverFetchCap = 8 * time.Second
 )
 
 type coverEntry struct {
@@ -31,6 +33,7 @@ type CoverService struct {
 	client *http.Client
 	mu     sync.Mutex
 	cache  map[string]coverEntry
+	sf     singleflight.Group
 }
 
 func NewCoverService(client *http.Client) *CoverService {
@@ -50,12 +53,23 @@ func (cs *CoverService) Lookup(ctx context.Context, q string) string {
 	if img, ok := cs.get(key); ok {
 		return img
 	}
-	img := fetchItunesCover(ctx, cs.client, q)
-	cs.put(key, img)
+
+	v, _, _ := cs.sf.Do(key, func() (any, error) {
+		if img, ok := cs.get(key); ok {
+			return img, nil
+		}
+		// Shared fill must not die with the first client's cancel.
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coverFetchCap)
+		defer cancel()
+		img := fetchItunesCover(fctx, cs.client, q)
+		cs.put(key, img)
+		return img, nil
+	})
+	img, _ := v.(string)
 	return img
 }
 
-// FillSongs sets Image on songs that lack one (parallel, cached).
+// FillSongs sets Image on songs that lack one (parallel, cached). Honors ctx deadline.
 func (cs *CoverService) FillSongs(ctx context.Context, songs []domain.Song) {
 	if cs == nil || len(songs) == 0 {
 		return
@@ -70,11 +84,18 @@ func (cs *CoverService) FillSongs(ctx context.Context, songs []domain.Song) {
 		if q == "" {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		wg.Add(1)
 		go func(i int, q string) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
 			if img := cs.Lookup(ctx, q); img != "" {
 				songs[i].Image = img
 			}

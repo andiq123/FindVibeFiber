@@ -1,14 +1,19 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/andiq123/FindVibeFiber/internal/core/ports"
 	"github.com/andiq123/FindVibeFiber/internal/core/services"
 	"github.com/andiq123/FindVibeFiber/internal/utils"
 	"github.com/gofiber/fiber/v3"
 )
+
+// Match explore: don't let cold iTunes dominate search p95.
+const searchCoverBudget = 2500 * time.Millisecond
 
 type SearchHandler struct {
 	searchService ports.ISearchService
@@ -52,7 +57,12 @@ func (sh *SearchHandler) Search(c fiber.Ctx) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "no songs found"})
 	}
 
-	// ponytail: fill only the HTTP response page — not every resolveOne inside radio/explore
-	sh.covers.FillSongs(c.Context(), response.Songs)
+	// Fill art with a short budget — empty image beats a slow search response.
+	coverCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), searchCoverBudget)
+	sh.covers.FillSongs(coverCtx, response.Songs)
+	cancel()
+
+	// Align with SearchService TTL (2m); clients may revalidate sooner.
+	c.Set("Cache-Control", "private, max-age=120")
 	return c.JSON(response)
 }
