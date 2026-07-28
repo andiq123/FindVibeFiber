@@ -137,7 +137,7 @@ func (h *RecommendHandler) GetSimilarArtists(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"artists": names})
 }
 
-// GET /artist-albums?artist= → {artist, albums:[{name,artist,image,playcount}]} via Last.fm artist.getTopAlbums.
+// GET /artist-albums?artist=&page= → {artist, albums, pagination} via Last.fm artist.getTopAlbums.
 func (h *RecommendHandler) GetArtistAlbums(c fiber.Ctx) error {
 	if h.apiKey == "" {
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "LASTFM_API_KEY not set"})
@@ -146,11 +146,24 @@ func (h *RecommendHandler) GetArtistAlbums(c fiber.Ctx) error {
 	if artist == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist required"})
 	}
-	albums, err := h.lastfmTopAlbums(c.Context(), artist)
+	page := 1
+	if pageParam := c.Query("page"); pageParam != "" {
+		if p, err := strconv.Atoi(pageParam); err == nil {
+			page = p
+		}
+	}
+	if err := utils.ValidatePage(page); err != nil {
+		return HandleError(c, err)
+	}
+	albums, pag, err := h.lastfmTopAlbums(c.Context(), artist, page, 20)
 	if err != nil {
 		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't load albums"})
 	}
-	return c.JSON(fiber.Map{"artist": artist, "albums": albums})
+	return c.JSON(fiber.Map{
+		"artist":     artist,
+		"albums":     albums,
+		"pagination": pag,
+	})
 }
 
 // GET /album-tracks?artist=&album= → playable Songs from Last.fm album.getInfo + resolve.

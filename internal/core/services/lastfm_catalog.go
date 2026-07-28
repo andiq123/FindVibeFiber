@@ -103,17 +103,21 @@ func (l *LastFMCatalog) Search(ctx context.Context, query string, page, limit in
 	return CatalogPage{Hits: out, Artists: artists, Pagination: pag}, nil
 }
 
-// TopAlbums returns Last.fm artist.getTopAlbums (browse-only).
-func (l *LastFMCatalog) TopAlbums(ctx context.Context, artist string, limit int) ([]domain.ArtistAlbum, error) {
+// TopAlbums returns Last.fm artist.getTopAlbums (browse-only), most popular order.
+// page matches Last.fm discography paging (/music/ARTIST/+albums?page=N).
+func (l *LastFMCatalog) TopAlbums(ctx context.Context, artist string, limit, page int) ([]domain.ArtistAlbum, *domain.PaginationInfo, error) {
 	if !l.Configured() {
-		return nil, fmt.Errorf("lastfm catalog: %w", domain.ErrUnavailable)
+		return nil, nil, fmt.Errorf("lastfm catalog: %w", domain.ErrUnavailable)
 	}
 	artist = strings.TrimSpace(artist)
 	if artist == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if limit < 1 {
 		limit = catalogAlbumsForTopArtist
+	}
+	if page < 1 {
+		page = 1
 	}
 	q := url.Values{
 		"method":      {"artist.getTopAlbums"},
@@ -122,24 +126,39 @@ func (l *LastFMCatalog) TopAlbums(ctx context.Context, artist string, limit int)
 		"format":      {"json"},
 		"autocorrect": {"1"},
 		"limit":       {strconv.Itoa(limit)},
+		"page":        {strconv.Itoa(page)},
 	}
 	raw, err := l.getJSON(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var payload struct {
 		TopAlbums struct {
 			Album json.RawMessage `json:"album"`
+			Attr  struct {
+				Page       string `json:"page"`
+				PerPage    string `json:"perPage"`
+				TotalPages string `json:"totalPages"`
+				Total      string `json:"total"`
+			} `json:"@attr"`
 		} `json:"topalbums"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rows, err := decodeCatalogAlbums(payload.TopAlbums.Album)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return mapCatalogAlbums(artist, rows, limit), nil
+	pag := paginationFromAttr(
+		page,
+		limit,
+		payload.TopAlbums.Attr.Page,
+		payload.TopAlbums.Attr.PerPage,
+		payload.TopAlbums.Attr.TotalPages,
+		payload.TopAlbums.Attr.Total,
+	)
+	return mapCatalogAlbums(artist, rows, limit), pag, nil
 }
 
 // AlbumSearch returns Last.fm album.search matches for the query.
@@ -313,6 +332,30 @@ func (l *LastFMCatalog) trackSearch(ctx context.Context, query string, page, lim
 		TotalPages:   totalPages,
 	}
 	return hits, pag, nil
+}
+
+// paginationFromAttr builds PaginationInfo from Last.fm @attr fields (albums / charts).
+func paginationFromAttr(reqPage, fallbackPerPage int, pageS, perPageS, totalPagesS, totalS string) *domain.PaginationInfo {
+	page := reqPage
+	if p, err := strconv.Atoi(strings.TrimSpace(pageS)); err == nil && p > 0 {
+		page = p
+	}
+	perPage := fallbackPerPage
+	if p, err := strconv.Atoi(strings.TrimSpace(perPageS)); err == nil && p > 0 {
+		perPage = p
+	}
+	total, _ := strconv.Atoi(strings.TrimSpace(totalS))
+	totalPages, _ := strconv.Atoi(strings.TrimSpace(totalPagesS))
+	if totalPages <= 0 && total > 0 && perPage > 0 {
+		totalPages = (total + perPage - 1) / perPage
+	}
+	return &domain.PaginationInfo{
+		CurrentPage:  page,
+		TotalResults: total,
+		HasNextPage:  totalPages > 0 && page < totalPages,
+		HasPrevPage:  page > 1,
+		TotalPages:   totalPages,
+	}
 }
 
 func (l *LastFMCatalog) artistSearchRows(ctx context.Context, query string, limit int) ([]searchArtistRow, error) {

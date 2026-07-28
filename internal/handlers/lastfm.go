@@ -136,41 +136,76 @@ func (h *RecommendHandler) lastfmSimilarArtists(ctx context.Context, artist stri
 	return out, nil
 }
 
-func (h *RecommendHandler) lastfmTopAlbums(ctx context.Context, artist string) ([]domain.ArtistAlbum, error) {
+func (h *RecommendHandler) lastfmTopAlbums(ctx context.Context, artist string, page, limit int) ([]domain.ArtistAlbum, *domain.PaginationInfo, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
 	q := url.Values{
 		"method":      {"artist.getTopAlbums"},
 		"artist":      {artist},
 		"api_key":     {h.apiKey},
 		"format":      {"json"},
 		"autocorrect": {"1"},
-		"limit":       {"20"},
+		"limit":       {strconv.Itoa(limit)},
+		"page":        {strconv.Itoa(page)},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://ws.audioscrobbler.com/2.0/?"+q.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var data struct {
 		TopAlbums struct {
 			Album json.RawMessage `json:"album"`
+			Attr  struct {
+				Page       string `json:"page"`
+				PerPage    string `json:"perPage"`
+				TotalPages string `json:"totalPages"`
+				Total      string `json:"total"`
+			} `json:"@attr"`
 		} `json:"topalbums"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	raw, err := decodeLastfmAlbumList(data.TopAlbums.Album)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return mapLastfmAlbums(artist, raw), nil
+	pag := &domain.PaginationInfo{
+		CurrentPage: page,
+		HasPrevPage: page > 1,
+	}
+	if p, err := strconv.Atoi(strings.TrimSpace(data.TopAlbums.Attr.Page)); err == nil && p > 0 {
+		pag.CurrentPage = p
+	}
+	perPage := limit
+	if p, err := strconv.Atoi(strings.TrimSpace(data.TopAlbums.Attr.PerPage)); err == nil && p > 0 {
+		perPage = p
+	}
+	if t, err := strconv.Atoi(strings.TrimSpace(data.TopAlbums.Attr.Total)); err == nil {
+		pag.TotalResults = t
+	}
+	if tp, err := strconv.Atoi(strings.TrimSpace(data.TopAlbums.Attr.TotalPages)); err == nil {
+		pag.TotalPages = tp
+	} else if pag.TotalResults > 0 && perPage > 0 {
+		pag.TotalPages = (pag.TotalResults + perPage - 1) / perPage
+	}
+	pag.HasNextPage = pag.TotalPages > 0 && pag.CurrentPage < pag.TotalPages
+	pag.HasPrevPage = pag.CurrentPage > 1
+
+	return mapLastfmAlbums(artist, raw, limit), pag, nil
 }
 
 func (h *RecommendHandler) lastfmAlbumTracks(ctx context.Context, artist, album string) ([]lastfmPair, error) {
@@ -327,9 +362,12 @@ func decodeLastfmAlbumList(raw json.RawMessage) ([]lastfmAlbumRow, error) {
 }
 
 // mapLastfmAlbums drops null/empty/"(null)" rows and dedupes by normalized name.
-func mapLastfmAlbums(fallbackArtist string, rows []lastfmAlbumRow) []domain.ArtistAlbum {
+func mapLastfmAlbums(fallbackArtist string, rows []lastfmAlbumRow, limit int) []domain.ArtistAlbum {
+	if limit < 1 {
+		limit = 20
+	}
 	seen := map[string]bool{}
-	out := make([]domain.ArtistAlbum, 0, len(rows))
+	out := make([]domain.ArtistAlbum, 0, min(len(rows), limit))
 	for _, row := range rows {
 		name := strings.TrimSpace(row.Name)
 		if name == "" || strings.EqualFold(name, "(null)") || strings.EqualFold(name, "null") {
@@ -350,7 +388,7 @@ func mapLastfmAlbums(fallbackArtist string, rows []lastfmAlbumRow) []domain.Arti
 			Image:     lastfmBestImage(row.Image),
 			Playcount: lastfmPlaycount(row.Playcount),
 		})
-		if len(out) >= 16 {
+		if len(out) >= limit {
 			break
 		}
 	}

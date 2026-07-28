@@ -24,8 +24,8 @@ func (s stubCatalog) Configured() bool { return true }
 func (s stubCatalog) Search(context.Context, string, int, int) (CatalogPage, error) {
 	return CatalogPage{Hits: s.hits, Artists: s.artists, Pagination: s.pag}, s.err
 }
-func (s stubCatalog) TopAlbums(context.Context, string, int) ([]domain.ArtistAlbum, error) {
-	return s.albums, nil
+func (s stubCatalog) TopAlbums(context.Context, string, int, int) ([]domain.ArtistAlbum, *domain.PaginationInfo, error) {
+	return s.albums, nil, nil
 }
 func (s stubCatalog) AlbumSearch(context.Context, string, int) ([]domain.ArtistAlbum, error) {
 	return nil, nil

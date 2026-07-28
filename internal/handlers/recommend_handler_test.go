@@ -352,7 +352,7 @@ func TestMapLastfmAlbumsCleansAndDedupes(t *testing.T) {
 		{Name: "The Very Best of Cher", Playcount: float64(50), Artist: struct {
 			Name string `json:"name"`
 		}{Name: ""}},
-	})
+	}, 20)
 	if len(got) != 2 {
 		t.Fatalf("want 2 albums, got %+v", got)
 	}

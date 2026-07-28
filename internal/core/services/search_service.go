@@ -34,7 +34,7 @@ type searchCacheEntry struct {
 type catalogSearcher interface {
 	Configured() bool
 	Search(ctx context.Context, query string, page, limit int) (CatalogPage, error)
-	TopAlbums(ctx context.Context, artist string, limit int) ([]domain.ArtistAlbum, error)
+	TopAlbums(ctx context.Context, artist string, limit, page int) ([]domain.ArtistAlbum, *domain.PaginationInfo, error)
 	AlbumSearch(ctx context.Context, query string, limit int) ([]domain.ArtistAlbum, error)
 }
 
@@ -257,7 +257,7 @@ func (ss *SearchService) gatherAlbums(ctx context.Context, query string, artists
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tops, _ = ss.catalog.TopAlbums(ctx, artists[0].Name, catalogAlbumsForTopArtist)
+			tops, _, _ = ss.catalog.TopAlbums(ctx, artists[0].Name, catalogAlbumsForTopArtist, 1)
 		}()
 	}
 	wg.Wait()
