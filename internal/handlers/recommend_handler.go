@@ -21,7 +21,9 @@ import (
 const (
 	recommendResolveCap = 10 // Explore "Because" rails — longer browse before radio
 	/** Radio wants a longer same-vibe batch so the queue doesn't pivot every extend. */
-	radioResolveCap     = 12
+	radioResolveCap = 12
+	/** Album play only needs a short queue to start — full resolve burns the gateway budget. */
+	albumResolveCap = 4
 	recommendSearchPeek = 8
 	recommendTTL        = 6 * time.Hour
 	recommendCacheCap   = 64
@@ -42,6 +44,8 @@ const (
 
 	resolveTTL      = 15 * time.Minute
 	resolveCacheCap = 256
+
+	albumTracksBudget = 45 * time.Second
 )
 
 type recommendEntry struct {
@@ -176,26 +180,29 @@ func (h *RecommendHandler) GetAlbumTracks(c fiber.Ctx) error {
 	if artist == "" || album == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "artist and album required"})
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), albumTracksBudget)
 	defer cancel()
 
 	pairs, err := h.lastfmAlbumTracks(ctx, artist, album)
 	if err != nil {
 		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "Couldn't load album tracks"})
 	}
+	// Last.fm often omits tracklists for singles — fall back to provider search.
 	if len(pairs) == 0 {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "No tracks for this album"})
+		songs := h.albumSearchFallback(ctx, artist, album)
+		if len(songs) == 0 {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "No tracks for this album"})
+		}
+		return c.JSON(songs)
 	}
-	capN := recommendResolveCap
-	if len(pairs) < capN {
-		capN = len(pairs)
+	// Short queue is enough to start playback; client CoverResolver fills art.
+	songs := h.resolveN(ctx, pairs, lastfmPair{}, albumResolveCap, false, true)
+	if len(songs) == 0 {
+		songs = h.albumSearchFallback(ctx, artist, album)
 	}
-	// Album tracks share one artist — recommend diversity would stall at 1 song and burn the whole budget.
-	songs := h.resolveN(ctx, pairs, lastfmPair{}, capN, false, true)
 	if len(songs) == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Couldn't resolve album tracks"})
 	}
-	h.covers.FillSongs(ctx, songs)
 	return c.JSON(songs)
 }
 
@@ -529,6 +536,51 @@ func (h *RecommendHandler) searchFallback(ctx context.Context, artists []string,
 			if len(out) >= recommendResolveCap {
 				break
 			}
+		}
+	}
+	return out
+}
+
+// albumSearchFallback plays singles / albums Last.fm lists without a tracklist.
+func (h *RecommendHandler) albumSearchFallback(ctx context.Context, artist, album string) []domain.Song {
+	if h.search == nil {
+		return nil
+	}
+	q := strings.TrimSpace(artist + " " + album)
+	if q == "" {
+		return nil
+	}
+	songs, err := h.search.SearchFirst(ctx, q, albumResolveCap)
+	if err != nil || len(songs) == 0 {
+		return nil
+	}
+	out := make([]domain.Song, 0, albumResolveCap)
+	seen := map[string]bool{}
+	wantArt := utils.NormalizeString(artist)
+	for _, s := range songs {
+		if s.Link == "" {
+			continue
+		}
+		k := songKey(s.Artist, s.Title)
+		if k == "" || seen[k] {
+			continue
+		}
+		// Singles: album title is often the track title.
+		if album != "" && services.IsPlayableMatch(artist, album, s) {
+			seen[k] = true
+			out = append(out, s)
+		} else if wantArt != "" {
+			gotArt := utils.NormalizeString(s.Artist)
+			if gotArt == wantArt || strings.Contains(gotArt, wantArt) || strings.Contains(wantArt, gotArt) {
+				seen[k] = true
+				out = append(out, s)
+			}
+		} else {
+			seen[k] = true
+			out = append(out, s)
+		}
+		if len(out) >= albumResolveCap {
+			break
 		}
 	}
 	return out

@@ -78,8 +78,23 @@ func (h *RecommendHandler) resolveN(
 			cancel()
 			return out
 		}
+		// Album: return what we have before the gateway kills the request.
+		if sameArtistOK {
+			if out := pickResolved(byIdx, prefix, seed, cap, true); len(out) > 0 && albumBudgetNearlyGone(ctx) {
+				cancel()
+				return out
+			}
+		}
 	}
 	return pickResolved(byIdx, len(pairs), seed, cap, sameArtistOK)
+}
+
+func albumBudgetNearlyGone(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return false
+	}
+	return time.Until(deadline) < 3*time.Second
 }
 
 func pickResolved(byIdx map[int]domain.Song, n int, seed lastfmPair, cap int, sameArtistOK bool) []domain.Song {

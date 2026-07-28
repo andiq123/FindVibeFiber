@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -439,6 +440,10 @@ func lastfmPlaycount(v any) int64 {
 }
 
 func decodeLastfmTrackList(raw json.RawMessage) ([]lastfmTrack, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
 	var many []lastfmTrack
 	if err := json.Unmarshal(raw, &many); err == nil {
 		return many, nil
